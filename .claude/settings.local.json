@@ -5,7 +5,11 @@
       "Bash(uv run lastfm --help:*)",
       "Bash(uv run:*)",
       "WebFetch(domain:www.yearendlists.com)",
-      "Bash(python3:*)"
+      "Bash(python3:*)",
+      "WebSearch",
+      "WebFetch(domain:musicbrainz.org)",
+      "WebFetch(domain:metabrainz.org)",
+      "WebFetch(domain:data.metabrainz.org)"
     ]
   }
 }
