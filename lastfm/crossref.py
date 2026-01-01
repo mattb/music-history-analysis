@@ -100,12 +100,23 @@ def match_with_history(
     - unheard: Highly-rated albums you haven't heard
     - your_artists: Your top artists and their critic-listed albums
     """
+    from . import data
+
     # Filter scrobbles to year
     df = scrobbles_df[scrobbles_df['year'] == year].copy()
 
-    # Build your listening data
+    # Get albums you've properly listened to (5+ tracks, 5+ plays each)
+    listened_albums = data.get_albums_listened_to(df)
+
+    # Normalize the listened albums for matching with critics
+    your_albums = set()
+    for artist, album in listened_albums:
+        norm_artist = normalize_for_matching(artist)
+        norm_album = normalize_for_matching(album)
+        your_albums.add((norm_artist, norm_album))
+
+    # Build artist plays and album plays counters
     your_artists = set()
-    your_albums = set()  # (norm_artist, norm_album)
     artist_plays = Counter()
     album_plays = Counter()
 
@@ -120,7 +131,6 @@ def match_with_history(
         artist_plays[norm_artist] += 1
 
         if album:
-            your_albums.add((norm_artist, norm_album))
             album_plays[(norm_artist, norm_album)] += 1
 
     critics_albums = critics_data['albums']

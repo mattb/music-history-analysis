@@ -99,7 +99,15 @@ def critics_matched(
             if get_critics_path(y).exists():
                 years_to_search.append(y)
 
-    # Build your albums set (for matching)
+    # Build your albums set (albums properly listened to: 5+ tracks, 5+ plays each)
+    listened_albums = data.get_albums_listened_to(df)
+    your_albums_set = set()
+    for artist, album in listened_albums:
+        key = (crossref.normalize_for_matching(artist),
+               crossref.normalize_for_matching(album))
+        your_albums_set.add(key)
+
+    # Count plays for albums we've properly listened to
     your_albums = {}  # (norm_artist, norm_album) -> plays
     df_with_albums = df[df["album"] != ""]
     for _, row in df_with_albums.iterrows():
@@ -108,7 +116,8 @@ def critics_matched(
         if pd.notna(artist) and pd.notna(album) and artist and album:
             key = (crossref.normalize_for_matching(artist),
                    crossref.normalize_for_matching(album))
-            your_albums[key] = your_albums.get(key, 0) + 1
+            if key in your_albums_set:  # Only count plays for albums we've properly listened to
+                your_albums[key] = your_albums.get(key, 0) + 1
 
     # Find matches across all years
     all_matches = {}  # (norm_artist, norm_album) -> {artist, album, critics_count, your_plays, years}
@@ -199,18 +208,19 @@ def critics_unheard(
             if get_critics_path(y).exists():
                 years_to_search.append(y)
 
-    # Build set of your albums and artists
+    # Build set of your albums (albums properly listened to: 5+ tracks, 5+ plays each)
+    listened_albums = data.get_albums_listened_to(df)
     your_albums = set()
-    your_artists = {}  # norm_artist -> plays
-    df_with_albums = df[df["album"] != ""]
-    for _, row in df_with_albums.iterrows():
-        artist = row.get("artist", "")
-        album = row.get("album", "")
-        if pd.notna(artist) and pd.notna(album) and artist and album:
-            key = (crossref.normalize_for_matching(artist),
-                   crossref.normalize_for_matching(album))
-            your_albums.add(key)
+    for artist, album in listened_albums:
+        key = (crossref.normalize_for_matching(artist),
+               crossref.normalize_for_matching(album))
+        your_albums.add(key)
 
+    # Build artist plays (all plays, not just listened albums)
+    your_artists = {}  # norm_artist -> plays
+    for _, row in df.iterrows():
+        artist = row.get("artist", "")
+        if pd.notna(artist) and artist:
             artist_norm = crossref.normalize_for_matching(artist)
             your_artists[artist_norm] = your_artists.get(artist_norm, 0) + 1
 
@@ -367,13 +377,13 @@ def critics_list(
     df = data.load_scrobbles(get_csv_path(csv))
     df_year = df[df['year'] == year]
 
-    # Build set of your albums (normalized)
+    # Build set of your albums (albums properly listened to: 5+ tracks, 5+ plays each)
+    listened_albums = data.get_albums_listened_to(df_year)
     your_albums = set()
-    for _, row in df_year.iterrows():
-        if row['album']:
-            key = (crossref.normalize_for_matching(row['artist']),
-                   crossref.normalize_for_matching(row['album']))
-            your_albums.add(key)
+    for artist, album in listened_albums:
+        key = (crossref.normalize_for_matching(artist),
+               crossref.normalize_for_matching(album))
+        your_albums.add(key)
 
     # Calculate stats per critic
     critic_stats = []
@@ -578,19 +588,16 @@ def critics_blind_spots(
 
     df = data.load_scrobbles(get_csv_path(csv))
 
-    # Build set of all albums you've ever played (normalized)
+    # Build set of all albums you've properly listened to (5+ tracks, 5+ plays each)
+    listened_albums = data.get_albums_listened_to(df)
     your_albums = set()
     your_artists = set()
-    df_with_albums = df[df["album"] != ""]
-    for _, row in df_with_albums.iterrows():
-        artist = row["artist"] if pd.notna(row["artist"]) else ""
-        album = row["album"] if pd.notna(row["album"]) else ""
-        if artist and album:
-            your_albums.add((
-                crossref.normalize_for_matching(artist),
-                crossref.normalize_for_matching(album)
-            ))
-            your_artists.add(crossref.normalize_for_matching(artist))
+    for artist, album in listened_albums:
+        your_albums.add((
+            crossref.normalize_for_matching(artist),
+            crossref.normalize_for_matching(album)
+        ))
+        your_artists.add(crossref.normalize_for_matching(artist))
 
     # Aggregate across all available years
     all_blind_spots = {}  # (norm_artist, norm_album) -> {artist, album, total_critics, years}
@@ -830,17 +837,14 @@ def critics_tracker(
     with open(target_path) as f:
         target_data = json.load(f)
 
-    # Build your albums set (all time, for checking what you've heard)
+    # Build your albums set (albums properly listened to: 5+ tracks, 5+ plays each)
+    listened_albums = data.get_albums_listened_to(df)
     your_albums = set()
-    df_with_albums = df[df["album"] != ""]
-    for _, row in df_with_albums.iterrows():
-        artist = row["artist"] if pd.notna(row["artist"]) else ""
-        album = row["album"] if pd.notna(row["album"]) else ""
-        if artist and album:
-            your_albums.add((
-                crossref.normalize_for_matching(artist),
-                crossref.normalize_for_matching(album)
-            ))
+    for artist, album in listened_albums:
+        your_albums.add((
+            crossref.normalize_for_matching(artist),
+            crossref.normalize_for_matching(album)
+        ))
 
     # Find critics with overlap in reference year
     critic_overlap = {}

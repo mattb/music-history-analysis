@@ -154,3 +154,55 @@ def new_artists_in_period(
 
     mask = (first["timestamp"] >= start) & (first["timestamp"] <= end)
     return first[mask].sort_values("timestamp", ascending=False)
+
+
+def get_albums_listened_to(
+    df: pd.DataFrame,
+    min_unique_tracks: int = 5,
+    min_plays_per_track: int = 5,
+) -> set[tuple[str, str]]:
+    """Get albums that have been properly listened to.
+
+    An album is considered "listened to" only if you've played at least
+    min_unique_tracks different tracks from it, each at least min_plays_per_track times.
+
+    This prevents albums from being counted as "heard" when you've only
+    played one or two tracks from them once or twice.
+
+    Args:
+        df: DataFrame of scrobbles
+        min_unique_tracks: Minimum number of different tracks required (default: 5)
+        min_plays_per_track: Minimum plays required per track (default: 5)
+
+    Returns:
+        Set of (artist, album) tuples that meet the criteria
+    """
+    # Filter to rows with albums
+    df_albums = df[df["album"] != ""].copy()
+
+    # Group by artist/album/track and count plays per track
+    track_plays = (
+        df_albums.groupby(["artist", "album", "track"])
+        .size()
+        .reset_index(name="plays")
+    )
+
+    # Filter to tracks played at least min_plays_per_track times
+    qualified_tracks = track_plays[track_plays["plays"] >= min_plays_per_track]
+
+    # Count how many qualified tracks per album
+    qualified_track_counts = (
+        qualified_tracks.groupby(["artist", "album"])
+        .size()
+        .reset_index(name="qualified_tracks")
+    )
+
+    # Filter to albums with at least min_unique_tracks qualified tracks
+    listened_albums = qualified_track_counts[
+        qualified_track_counts["qualified_tracks"] >= min_unique_tracks
+    ]
+
+    # Return as set of tuples for easy membership testing
+    return set(
+        zip(listened_albums["artist"], listened_albums["album"])
+    )

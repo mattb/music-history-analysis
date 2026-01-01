@@ -83,19 +83,50 @@ lastfm fetch YOUR_USERNAME --start-year 2024
 
 | Module | Purpose |
 |--------|---------|
-| `lastfm/cli.py` | Main CLI entry point with root commands (stats, review, artist, fetch, fetch-api-key) and global options (~1600 lines) |
+| `lastfm/cli.py` | Main CLI entry point with root commands (stats, overview, review, artist, fetch, fetch-api-key) and global options (~2600 lines) |
 | `lastfm/commands/listen.py` | Listen command group: top, plays, discovered, abandoned, first (~450 lines) |
 | `lastfm/commands/critics.py` | Critics command group: fetch, matched, unheard, overlap, list, who-listed, blind-spots, accuracy, tracker (~1200 lines) |
 | `lastfm/commands/history.py` | History command group: loyalty, evolution (~600 lines) |
 | `lastfm/commands/metadata.py` | Metadata command group: download, enrich, catalog, genres, labels, countries, types (~800 lines) |
 | `lastfm/commands/spotify.py` | Spotify command group: auth, playlist (~300 lines) |
-| `lastfm/data.py` | DataFrame loading, filtering, aggregation, discovery/abandonment detection |
-| `lastfm/crossref.py` | Cross-reference critics with listening history, normalization functions |
+| `lastfm/data.py` | DataFrame loading, filtering, aggregation, album listening criteria (5x5), discovery/abandonment detection |
+| `lastfm/crossref.py` | Cross-reference critics with listening history, normalization functions, uses album listening criteria |
 | `lastfm/crawler.py` | yearendlists.com scraper |
 | `lastfm/lastfm_api.py` | Last.fm API client for downloading scrobble history (~180 lines) |
 | `lastfm/spotify.py` | Spotify OAuth + playlist creation |
 | `lastfm/release_years.py` | MusicBrainz API integration (rate-limited) |
 | `lastfm/musicbrainz_db.py` | Local MusicBrainz SQLite database |
+
+## Album Listening Criteria
+
+**Definition**: An album is only considered "listened to" if you've played at least **5 different tracks** from it, each at least **5 times**.
+
+This prevents albums from being counted as "heard" when you've only played one or two tracks from them once or twice. It ensures you've genuinely engaged with the album.
+
+**Implementation**: All album-related analysis uses `data.get_albums_listened_to(df)`:
+
+```python
+from lastfm import data
+
+# Get albums that meet the 5x5 criteria
+listened_albums = data.get_albums_listened_to(df)
+# Returns: set of (artist, album) tuples
+```
+
+**What this affects**:
+- Critics matched/unheard commands
+- Review and overview reports
+- Artist command comparisons
+- All album statistics
+
+If you need different criteria, modify the parameters:
+```python
+listened_albums = data.get_albums_listened_to(
+    df,
+    min_unique_tracks=3,  # At least 3 tracks
+    min_plays_per_track=3  # Each played 3+ times
+)
+```
 
 ## Normalization Strategy
 
@@ -271,6 +302,22 @@ info = musicbrainz_db.lookup_release("Radiohead", "OK Computer")
 # Returns: ReleaseInfo(year=1997, genres=["alternative rock", ...],
 #                      labels=["Parlophone"], country="GB", ...)
 ```
+
+### 6. Hidden Gems (Review Command)
+The "Hidden Gems" section shows artists you championed that critics missed, but only if they released albums in the review year:
+
+```python
+# Only include artists with albums actually released in review year
+for ctx in artist_contexts:
+    norm_name = crossref.normalize_for_matching(ctx["name"])
+    if norm_name not in critics_artists and norm_name in new_album_artists:
+        # Use MusicBrainz to verify release year
+        info = musicbrainz_db.lookup_release(artist, album, conn)
+        if info and info.year == year:
+            overlooked_gems.append({...})
+```
+
+This prevents showing artists like David Bowie (no 2025 release) when generating a 2025 review, ensuring "Hidden Gems" are actual new releases that critics overlooked.
 
 ## HTML Report Generation
 

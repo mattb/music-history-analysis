@@ -309,8 +309,14 @@ def artist(
     if critics_by_year:
         console.print(f"\n[bold green]Your Taste vs Critics[/bold green]")
 
-        # Check which critic-selected albums you've listened to
-        your_albums = set(crossref.normalize_for_matching(a) for a in albums_df["album"].unique())
+        # Check which critic-selected albums you've listened to (5+ tracks, 5+ plays each)
+        listened_albums = data.get_albums_listened_to(matches)
+        # Extract just the album names for this artist
+        your_albums = set(
+            crossref.normalize_for_matching(album)
+            for artist, album in listened_albums
+            if artist == canonical_name
+        )
 
         heard = []
         unheard = []
@@ -460,17 +466,26 @@ def overview(
                 pass
 
     if all_critics_data:
-        # Build set of your albums (all-time)
-        df_with_albums = df_full[df_full["album"] != ""]
+        # Build set of your albums (albums properly listened to: 5+ tracks, 5+ plays each)
+        listened_albums = data.get_albums_listened_to(df_full)
         your_albums = set()
         your_albums_with_plays = {}
+
+        # Normalize listened albums for critic matching
+        for artist, album in listened_albums:
+            key = (crossref.normalize_for_matching(artist),
+                   crossref.normalize_for_matching(album))
+            your_albums.add(key)
+
+        # Count plays for albums we've listened to
+        df_with_albums = df_full[df_full["album"] != ""]
         for _, row in df_with_albums.iterrows():
             key = (crossref.normalize_for_matching(row["artist"]),
                    crossref.normalize_for_matching(row["album"]))
-            your_albums.add(key)
-            if key not in your_albums_with_plays:
-                your_albums_with_plays[key] = 0
-            your_albums_with_plays[key] += 1
+            if key in your_albums:  # Only count plays for albums we've properly listened to
+                if key not in your_albums_with_plays:
+                    your_albums_with_plays[key] = 0
+                your_albums_with_plays[key] += 1
 
         # Calculate per-critic overlap
         critic_scores = defaultdict(lambda: {"overlap": 0, "total": 0})
@@ -882,12 +897,12 @@ def review(
                 raw_critics = json.load(f)
             critics_available = True
 
-            # Build your albums set
-            df_with_albums = df[df["album"] != ""]
+            # Build your albums set (albums properly listened to: 5+ tracks, 5+ plays each)
+            listened_albums = data.get_albums_listened_to(df)
             your_albums = set()
-            for _, row in df_with_albums.iterrows():
-                key = (crossref.normalize_for_matching(row["artist"]),
-                       crossref.normalize_for_matching(row["album"]))
+            for artist, album in listened_albums:
+                key = (crossref.normalize_for_matching(artist),
+                       crossref.normalize_for_matching(album))
                 your_albums.add(key)
 
             # Match with critics
