@@ -1,0 +1,660 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>My 2025 in Music</title>
+    <style>
+        :root {
+            --bg: #0f0f0f;
+            --card-bg: #1a1a1a;
+            --text: #e5e5e5;
+            --text-dim: #737373;
+            --accent: #22d3ee;
+            --accent2: #a855f7;
+            --green: #4ade80;
+            --yellow: #facc15;
+        }
+
+        * { box-sizing: border-box; margin: 0; padding: 0; }
+
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+            background: var(--bg);
+            color: var(--text);
+            line-height: 1.6;
+            padding: 2rem;
+            max-width: 900px;
+            margin: 0 auto;
+        }
+
+        h1 {
+            font-size: 3rem;
+            font-weight: 800;
+            text-align: center;
+            margin-bottom: 0.5rem;
+            background: linear-gradient(135deg, var(--accent), var(--accent2));
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
+            background-clip: text;
+        }
+
+        .subtitle {
+            text-align: center;
+            color: var(--text-dim);
+            margin-bottom: 3rem;
+        }
+
+        section {
+            background: var(--card-bg);
+            border-radius: 1rem;
+            padding: 2rem;
+            margin-bottom: 2rem;
+        }
+
+        h2 {
+            font-size: 1.5rem;
+            margin-bottom: 0.5rem;
+            color: var(--accent);
+        }
+
+        h3 {
+            font-size: 1.1rem;
+            margin: 1.5rem 0 1rem;
+            color: var(--text-dim);
+        }
+
+        .section-intro {
+            color: var(--text-dim);
+            margin-bottom: 1.5rem;
+        }
+
+        .stats-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+            gap: 1rem;
+            margin-bottom: 1rem;
+        }
+
+        .stat {
+            text-align: center;
+            padding: 1rem;
+            background: var(--bg);
+            border-radius: 0.5rem;
+        }
+
+        .stat-value {
+            font-size: 2rem;
+            font-weight: 700;
+            color: var(--accent);
+        }
+
+        .stat-label {
+            color: var(--text-dim);
+            font-size: 0.9rem;
+        }
+
+        .stat-change {
+            text-align: center;
+            font-weight: 600;
+            margin-top: 0.5rem;
+        }
+
+        .artist-row, .album-row, .discovery-row {
+            display: flex;
+            gap: 1rem;
+            padding: 0.75rem 0;
+            border-bottom: 1px solid #2a2a2a;
+        }
+
+        .rank {
+            font-size: 1.25rem;
+            font-weight: 700;
+            color: var(--text-dim);
+            width: 2rem;
+            text-align: right;
+        }
+
+        .artist-info, .album-info, .discovery-info {
+            flex: 1;
+        }
+
+        .artist-name, .discovery-name {
+            font-weight: 600;
+            font-size: 1.1rem;
+        }
+
+        .album-name {
+            font-weight: 600;
+            color: var(--yellow);
+        }
+
+        .album-artist {
+            color: var(--text-dim);
+        }
+
+        .bar-container {
+            height: 8px;
+            background: #2a2a2a;
+            border-radius: 4px;
+            margin: 0.5rem 0;
+            overflow: hidden;
+        }
+
+        .bar {
+            height: 100%;
+            background: linear-gradient(90deg, var(--accent), var(--accent2));
+            border-radius: 4px;
+            transition: width 0.3s ease;
+        }
+
+        .album-bar {
+            background: linear-gradient(90deg, var(--yellow), #f97316);
+        }
+
+        .artist-meta, .album-meta, .discovery-meta {
+            font-size: 0.85rem;
+            color: var(--text-dim);
+        }
+
+        .badge {
+            display: inline-block;
+            font-size: 0.7rem;
+            padding: 0.15rem 0.5rem;
+            border-radius: 1rem;
+            font-weight: 600;
+            margin-left: 0.5rem;
+            vertical-align: middle;
+        }
+
+        .badge.new {
+            background: var(--yellow);
+            color: #000;
+        }
+
+        .badge.peak {
+            background: var(--green);
+            color: #000;
+        }
+
+        .critic-row, .matched-row, .gem-row, .rec-row {
+            padding: 0.5rem 0;
+            border-bottom: 1px solid #2a2a2a;
+        }
+
+        .matched-album, .gem-artist, .rec-album {
+            font-weight: 500;
+        }
+
+        .matched-stats, .gem-meta, .rec-artist {
+            font-size: 0.85rem;
+            color: var(--text-dim);
+        }
+
+        .rec-row {
+            display: grid;
+            grid-template-columns: 1fr 1fr auto;
+            gap: 1rem;
+            align-items: center;
+        }
+
+        .rec-album {
+            font-weight: 500;
+        }
+
+        .rec-artist {
+            color: var(--text-dim);
+            font-size: 0.85rem;
+        }
+
+        .rec-score {
+            color: var(--accent2);
+            font-weight: 600;
+            text-align: right;
+            min-width: 3rem;
+        }
+
+        footer {
+            text-align: center;
+            color: var(--text-dim);
+            font-size: 0.85rem;
+            padding: 2rem 0;
+        }
+    </style>
+</head>
+<body>
+    <h1>My 2025 in Music</h1>
+    <p class="subtitle">A year of listening, discovering, and obsessing</p>
+
+    <section>
+        <h2>📊 The Big Picture</h2>
+        <div class="stats-grid">
+            <div class="stat">
+                <div class="stat-value">10,176</div>
+                <div class="stat-label">tracks played</div>
+            </div>
+            <div class="stat">
+                <div class="stat-value">1,406</div>
+                <div class="stat-label">artists</div>
+            </div>
+            <div class="stat">
+                <div class="stat-value">2,003</div>
+                <div class="stat-label">albums</div>
+            </div>
+            <div class="stat">
+                <div class="stat-value">548</div>
+                <div class="stat-label">new discoveries</div>
+            </div>
+        </div>
+        <div class="stat-change" style="color: #4ade80">↑ 65% from 2024</div>
+    </section>
+
+    <section>
+        <h2>🎸 Your Obsessions</h2>
+        <p class="section-intro">The artists you couldn't stop playing</p>
+        <div class="artists-list">
+        <div class="artist-row">
+            <div class="rank">1</div>
+            <div class="artist-info">
+                <div class="artist-name">James Blake <span class="badge peak">↑ PEAK YEAR</span></div>
+                <div class="bar-container">
+                    <div class="bar" style="width: 100.0%"></div>
+                </div>
+                <div class="artist-meta">1,054 plays · Fan since 2010</div>
+            </div>
+        </div>
+        <div class="artist-row">
+            <div class="rank">2</div>
+            <div class="artist-info">
+                <div class="artist-name">Djrum <span class="badge peak">↑ PEAK YEAR</span></div>
+                <div class="bar-container">
+                    <div class="bar" style="width: 40.79696394686907%"></div>
+                </div>
+                <div class="artist-meta">430 plays · Fan since 2013</div>
+            </div>
+        </div>
+        <div class="artist-row">
+            <div class="rank">3</div>
+            <div class="artist-info">
+                <div class="artist-name">Sleep Token <span class="badge new">★ NEW</span></div>
+                <div class="bar-container">
+                    <div class="bar" style="width: 32.542694497153704%"></div>
+                </div>
+                <div class="artist-meta">343 plays · Discovered this year</div>
+            </div>
+        </div>
+        <div class="artist-row">
+            <div class="rank">4</div>
+            <div class="artist-info">
+                <div class="artist-name">Geese <span class="badge peak">↑ PEAK YEAR</span></div>
+                <div class="bar-container">
+                    <div class="bar" style="width: 23.244781783681216%"></div>
+                </div>
+                <div class="artist-meta">245 plays · Fan since 2021</div>
+            </div>
+        </div>
+        <div class="artist-row">
+            <div class="rank">5</div>
+            <div class="artist-info">
+                <div class="artist-name">Barker <span class="badge peak">↑ PEAK YEAR</span></div>
+                <div class="bar-container">
+                    <div class="bar" style="width: 18.975332068311197%"></div>
+                </div>
+                <div class="artist-meta">200 plays · Fan since 2019</div>
+            </div>
+        </div>
+        <div class="artist-row">
+            <div class="rank">6</div>
+            <div class="artist-info">
+                <div class="artist-name">Big Thief <span class="badge peak">↑ PEAK YEAR</span></div>
+                <div class="bar-container">
+                    <div class="bar" style="width: 17.836812144212523%"></div>
+                </div>
+                <div class="artist-meta">188 plays · Fan since 2016</div>
+            </div>
+        </div>
+        <div class="artist-row">
+            <div class="rank">7</div>
+            <div class="artist-info">
+                <div class="artist-name">ROSALÍA <span class="badge peak">↑ PEAK YEAR</span></div>
+                <div class="bar-container">
+                    <div class="bar" style="width: 17.17267552182163%"></div>
+                </div>
+                <div class="artist-meta">181 plays · Fan since 2019</div>
+            </div>
+        </div>
+        <div class="artist-row">
+            <div class="rank">8</div>
+            <div class="artist-info">
+                <div class="artist-name">Oneohtrix Point Never <span class="badge peak">↑ PEAK YEAR</span></div>
+                <div class="bar-container">
+                    <div class="bar" style="width: 16.603415559772298%"></div>
+                </div>
+                <div class="artist-meta">175 plays · Fan since 2009</div>
+            </div>
+        </div>
+        <div class="artist-row">
+            <div class="rank">9</div>
+            <div class="artist-info">
+                <div class="artist-name">Deafheaven </div>
+                <div class="bar-container">
+                    <div class="bar" style="width: 15.654648956356738%"></div>
+                </div>
+                <div class="artist-meta">165 plays · Fan since 2013</div>
+            </div>
+        </div>
+        <div class="artist-row">
+            <div class="rank">10</div>
+            <div class="artist-info">
+                <div class="artist-name">Max Cooper <span class="badge peak">↑ PEAK YEAR</span></div>
+                <div class="bar-container">
+                    <div class="bar" style="width: 14.800759013282732%"></div>
+                </div>
+                <div class="artist-meta">156 plays · Fan since 2018</div>
+            </div>
+        </div></div>
+    </section>
+
+    <section>
+        <h2>💿 The Albums You Lived With</h2>
+        <p class="section-intro">The records that defined your year</p>
+        <div class="albums-list">
+        <div class="album-row">
+            <div class="rank">1</div>
+            <div class="album-info">
+                <div class="album-name">Assume Form</div>
+                <div class="album-artist">James Blake</div>
+                <div class="bar-container">
+                    <div class="bar album-bar" style="width: 100.0%"></div>
+                </div>
+                <div class="album-meta">411 plays · ★ Discovered this year</div>
+            </div>
+        </div>
+        <div class="album-row">
+            <div class="rank">2</div>
+            <div class="album-info">
+                <div class="album-name">Under Tangled Silence</div>
+                <div class="album-artist">Djrum</div>
+                <div class="bar-container">
+                    <div class="bar album-bar" style="width: 94.8905109489051%"></div>
+                </div>
+                <div class="album-meta">390 plays · ★ Discovered this year</div>
+            </div>
+        </div>
+        <div class="album-row">
+            <div class="rank">3</div>
+            <div class="album-info">
+                <div class="album-name">Even In Arcadia</div>
+                <div class="album-artist">Sleep Token</div>
+                <div class="bar-container">
+                    <div class="bar album-bar" style="width: 81.26520681265207%"></div>
+                </div>
+                <div class="album-meta">334 plays · ★ Discovered this year</div>
+            </div>
+        </div>
+        <div class="album-row">
+            <div class="rank">4</div>
+            <div class="album-info">
+                <div class="album-name">Overgrown</div>
+                <div class="album-artist">James Blake</div>
+                <div class="bar-container">
+                    <div class="bar album-bar" style="width: 65.20681265206812%"></div>
+                </div>
+                <div class="album-meta">268 plays · First heard Apr 2013</div>
+            </div>
+        </div>
+        <div class="album-row">
+            <div class="rank">5</div>
+            <div class="album-info">
+                <div class="album-name">Getting Killed</div>
+                <div class="album-artist">Geese</div>
+                <div class="bar-container">
+                    <div class="bar album-bar" style="width: 58.88077858880778%"></div>
+                </div>
+                <div class="album-meta">242 plays · ★ Discovered this year</div>
+            </div>
+        </div>
+        <div class="album-row">
+            <div class="rank">6</div>
+            <div class="album-info">
+                <div class="album-name">Double Infinity</div>
+                <div class="album-artist">Big Thief</div>
+                <div class="bar-container">
+                    <div class="bar album-bar" style="width: 45.49878345498784%"></div>
+                </div>
+                <div class="album-meta">187 plays · ★ Discovered this year</div>
+            </div>
+        </div>
+        <div class="album-row">
+            <div class="rank">7</div>
+            <div class="album-info">
+                <div class="album-name">Stochastic Drift</div>
+                <div class="album-artist">Barker</div>
+                <div class="bar-container">
+                    <div class="bar album-bar" style="width: 44.28223844282238%"></div>
+                </div>
+                <div class="album-meta">182 plays · ★ Discovered this year</div>
+            </div>
+        </div>
+        <div class="album-row">
+            <div class="rank">8</div>
+            <div class="album-info">
+                <div class="album-name">LUX</div>
+                <div class="album-artist">ROSALÍA</div>
+                <div class="bar-container">
+                    <div class="bar album-bar" style="width: 39.65936739659367%"></div>
+                </div>
+                <div class="album-meta">163 plays · ★ Discovered this year</div>
+            </div>
+        </div>
+        <div class="album-row">
+            <div class="rank">9</div>
+            <div class="album-info">
+                <div class="album-name">Tranquilizer</div>
+                <div class="album-artist">Oneohtrix Point Never</div>
+                <div class="bar-container">
+                    <div class="bar album-bar" style="width: 36.496350364963504%"></div>
+                </div>
+                <div class="album-meta">150 plays · ★ Discovered this year</div>
+            </div>
+        </div>
+        <div class="album-row">
+            <div class="rank">10</div>
+            <div class="album-info">
+                <div class="album-name">The Colour in Anything</div>
+                <div class="album-artist">James Blake</div>
+                <div class="bar-container">
+                    <div class="bar album-bar" style="width: 35.27980535279806%"></div>
+                </div>
+                <div class="album-meta">145 plays · First heard May 2016</div>
+            </div>
+        </div></div>
+    </section>
+
+    <section>
+        <h2>🔍 New Discoveries</h2>
+        <p class="section-intro">You discovered <strong>548</strong> new artists this year. These are the ones that stuck.</p>
+        <div class="discoveries-list">
+        <div class="discovery-row">
+            <div class="rank">1</div>
+            <div class="discovery-info">
+                <div class="discovery-name">Sleep Token</div>
+                <div class="discovery-meta">343 plays · First heard "Caramel" on Jun 07</div>
+            </div>
+        </div>
+        <div class="discovery-row">
+            <div class="rank">2</div>
+            <div class="discovery-info">
+                <div class="discovery-name">Vier</div>
+                <div class="discovery-meta">44 plays · First heard "Where Were You" on Jun 26</div>
+            </div>
+        </div>
+        <div class="discovery-row">
+            <div class="rank">3</div>
+            <div class="discovery-info">
+                <div class="discovery-name">Jigitz</div>
+                <div class="discovery-meta">31 plays · First heard "you'll come back (JEV Version)" on Jan 29</div>
+            </div>
+        </div>
+        <div class="discovery-row">
+            <div class="rank">4</div>
+            <div class="discovery-info">
+                <div class="discovery-name">DJ Carpenter</div>
+                <div class="discovery-meta">30 plays · First heard "The Trip" on Jan 23</div>
+            </div>
+        </div>
+        <div class="discovery-row">
+            <div class="rank">5</div>
+            <div class="discovery-info">
+                <div class="discovery-name">Doechii</div>
+                <div class="discovery-meta">29 plays · First heard "STANKA POOH" on Feb 07</div>
+            </div>
+        </div>
+        <div class="discovery-row">
+            <div class="rank">6</div>
+            <div class="discovery-info">
+                <div class="discovery-name">Snocaps</div>
+                <div class="discovery-meta">26 plays · First heard "Coast" on Nov 01</div>
+            </div>
+        </div>
+        <div class="discovery-row">
+            <div class="rank">7</div>
+            <div class="discovery-info">
+                <div class="discovery-name">Emma-Jean Thackray</div>
+                <div class="discovery-meta">23 plays · First heard "Movementt" on Jul 15</div>
+            </div>
+        </div></div>
+    </section>
+
+    
+        <section class="critics-section">
+            <h2>🏆 You & The Critics</h2>
+            <p class="section-intro">Your taste aligned with critics on <strong>6.1%</strong> of their picks</p>
+
+            <h3>Critics Who Share Your Taste</h3>
+            <div class="critics-list"><div class="critic-row">Our Culture: 19/101 (19%)</div><div class="critic-row">Pitchfork: 17/51 (33%)</div><div class="critic-row">Slant: 16/51 (31%)</div><div class="critic-row">Northern Transmissions: 14/51 (27%)</div><div class="critic-row">Stereogum: 14/51 (27%)</div></div>
+
+            <h3>Your Favorites That Critics Also Loved</h3>
+            <div class="matched-list">
+            <div class="matched-row">
+                <div class="matched-album">Rosalía — Lux</div>
+                <div class="matched-stats">163 plays · 51 critics</div>
+            </div>
+            <div class="matched-row">
+                <div class="matched-album">Geese — Getting Killed</div>
+                <div class="matched-stats">242 plays · 46 critics</div>
+            </div>
+            <div class="matched-row">
+                <div class="matched-album">FKA twigs — Eusexua</div>
+                <div class="matched-stats">39 plays · 36 critics</div>
+            </div>
+            <div class="matched-row">
+                <div class="matched-album">Turnstile — Never Enough</div>
+                <div class="matched-stats">3 plays · 30 critics</div>
+            </div>
+            <div class="matched-row">
+                <div class="matched-album">Oklou — Choke Enough</div>
+                <div class="matched-stats">2 plays · 30 critics</div>
+            </div>
+            <div class="matched-row">
+                <div class="matched-album">Addison Rae — Addison</div>
+                <div class="matched-stats">9 plays · 27 critics</div>
+            </div>
+            <div class="matched-row">
+                <div class="matched-album">Sudan Archives — The BPM</div>
+                <div class="matched-stats">3 plays · 20 critics</div>
+            </div></div>
+        </section>
+
+        <section class="gems-section">
+            <h2>💎 Your Hidden Gems</h2>
+            <p class="section-intro">Artists you championed that critics missed</p>
+            <div class="gems-list">
+            <div class="gem-row">
+                <div class="gem-artist">James Blake</div>
+                <div class="gem-meta">1054 plays · Air & Lack Thereof, Assume Form</div>
+            </div>
+            <div class="gem-row">
+                <div class="gem-artist">Max Cooper</div>
+                <div class="gem-meta">156 plays · 8 Billion Realities, Candeleda</div>
+            </div>
+            <div class="gem-row">
+                <div class="gem-artist">David Bowie</div>
+                <div class="gem-meta">120 plays · 1. Outside (The Nathan Adler Diaries: A Hyper Cycle), 1. Outside (The Nathan Adler Diaries: A Hyper Cycle) [Expanded Edition]</div>
+            </div>
+            <div class="gem-row">
+                <div class="gem-artist">Neil Cowley</div>
+                <div class="gem-meta">118 plays · Battery: Live, Hall of Mirrors</div>
+            </div>
+            <div class="gem-row">
+                <div class="gem-artist">Bicep</div>
+                <div class="gem-meta">110 plays · Aura, CHROMA 000</div>
+            </div>
+            <div class="gem-row">
+                <div class="gem-artist">Max Richter</div>
+                <div class="gem-meta">109 plays · Hamnet (Original Motion Picture Soundtrack), Patterns / Solo (Pt. 2)</div>
+            </div></div>
+        </section>
+
+        <section class="recs-section">
+            <h2>🎧 What You Might Be Missing</h2>
+            <p class="section-intro">Recommended by critics who share your taste</p>
+            <div class="recs-list">
+            <div class="rec-row">
+                <div class="rec-album">Bleeds</div>
+                <div class="rec-artist">Wednesday</div>
+                <div class="rec-score">6.97</div>
+            </div>
+            <div class="rec-row">
+                <div class="rec-album">DeBÍ TiRAR MáS FOToS</div>
+                <div class="rec-artist">Bad Bunny</div>
+                <div class="rec-score">6.55</div>
+            </div>
+            <div class="rec-row">
+                <div class="rec-album">Baby</div>
+                <div class="rec-artist">Dijon</div>
+                <div class="rec-score">6.16</div>
+            </div>
+            <div class="rec-row">
+                <div class="rec-album">Golliwog</div>
+                <div class="rec-artist">Billy Woods</div>
+                <div class="rec-score">5.84</div>
+            </div>
+            <div class="rec-row">
+                <div class="rec-album">Essex Honey</div>
+                <div class="rec-artist">Blood Orange</div>
+                <div class="rec-score">5.42</div>
+            </div>
+            <div class="rec-row">
+                <div class="rec-album">Ego Death at a Bachelorette Party</div>
+                <div class="rec-artist">Hayley Williams</div>
+                <div class="rec-score">5.42</div>
+            </div>
+            <div class="rec-row">
+                <div class="rec-album">Let God Sort Em Out</div>
+                <div class="rec-artist">Clipse</div>
+                <div class="rec-score">5.08</div>
+            </div>
+            <div class="rec-row">
+                <div class="rec-album">West End Girl</div>
+                <div class="rec-artist">Lily Allen</div>
+                <div class="rec-score">5.06</div>
+            </div>
+            <div class="rec-row">
+                <div class="rec-album">Euro-Country</div>
+                <div class="rec-artist">CMAT</div>
+                <div class="rec-score">4.98</div>
+            </div>
+            <div class="rec-row">
+                <div class="rec-album">Fancy That</div>
+                <div class="rec-artist">PinkPantheress</div>
+                <div class="rec-score">4.70</div>
+            </div></div>
+        </section>
+        
+
+    <footer>
+        Generated December 31, 2025 · Data from Last.fm
+    </footer>
+</body>
+</html>

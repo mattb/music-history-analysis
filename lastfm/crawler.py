@@ -15,8 +15,6 @@ from rich.progress import Progress, SpinnerColumn, TextColumn
 console = Console()
 
 BASE_URL = "https://www.yearendlists.com"
-START_URL = "https://www.yearendlists.com/category/2025-albums"
-URL_PREFIX = "https://www.yearendlists.com/2025"
 
 
 @dataclass
@@ -34,14 +32,20 @@ class CriticList:
     title: str
     critic: str
     albums: list[Album]
+    year: int = 2025
 
 
 class YearEndListsCrawler:
-    def __init__(self, delay: float = 0.5):
+    def __init__(self, year: int = 2025, delay: float = 0.5):
+        self.year = year
         self.delay = delay
         self.visited: set[str] = set()
         self.list_urls: set[str] = set()
         self.lists: list[CriticList] = []
+
+        # Build URLs for the specified year
+        self.start_url = f"https://www.yearendlists.com/category/{year}-albums"
+        self.url_prefix = f"https://www.yearendlists.com/{year}"
 
     async def fetch(self, client: httpx.AsyncClient, url: str) -> str | None:
         """Fetch a URL with rate limiting."""
@@ -69,8 +73,8 @@ class YearEndListsCrawler:
             href = a["href"]
             full_url = urljoin(base_url, href)
 
-            # Check if it's a 2025 list URL (but not a category/page URL)
-            if full_url.startswith(URL_PREFIX) and "/category/" not in full_url and "/page/" not in full_url:
+            # Check if it's a list URL for our year (but not a category/page URL)
+            if full_url.startswith(self.url_prefix) and "/category/" not in full_url and "/page/" not in full_url:
                 # Skip album and artist detail pages
                 if "/albums/" not in full_url and "/artists/" not in full_url:
                     # Only include music/album lists, exclude film/TV/book/podcast/poetry
@@ -92,11 +96,25 @@ class YearEndListsCrawler:
         soup = BeautifulSoup(html, "lxml")
 
         # Extract title and critic from the page
-        title_elem = soup.find("h1") or soup.find("h2")
-        if not title_elem:
-            return None
+        # Try h1 first, but if it's generic ("Year-End Lists"), use h2
+        full_title = ""
+        for tag in ["h1", "h2"]:
+            elem = soup.find(tag)
+            if elem:
+                text = elem.get_text(strip=True)
+                # Skip generic site titles
+                if text.lower() not in ["year-end lists", "year end lists"]:
+                    full_title = text
+                    break
 
-        full_title = title_elem.get_text(strip=True)
+        if not full_title:
+            # Fallback to any h2
+            h2 = soup.find("h2")
+            if h2:
+                full_title = h2.get_text(strip=True)
+
+        if not full_title:
+            return None
 
         # Try to extract critic name from the title
         # Common patterns: "Critic Name: The Top 50 Albums of 2025" or "The Top 50 Albums of 2025 by Critic Name"
@@ -114,9 +132,10 @@ class YearEndListsCrawler:
         # Pattern 2: Fallback to URL parsing
         if not critic:
             url_path = urlparse(url).path
-            # URL pattern: /2025/critic-name-top-50-albums-of-2025
-            if url_path.startswith("/2025/"):
-                slug = url_path[6:]  # Remove /2025/
+            # URL pattern: /{year}/critic-name-top-50-albums-of-{year}
+            year_prefix = f"/{self.year}/"
+            if url_path.startswith(year_prefix):
+                slug = url_path[len(year_prefix):]
                 parts = slug.split("-")
                 # Find where list descriptor words start
                 # Note: "the" at the START is often part of the name (The Atlantic), but mid-phrase means list title
@@ -179,11 +198,12 @@ class YearEndListsCrawler:
             title=title,
             critic=critic,
             albums=albums,
+            year=self.year,
         )
 
     async def crawl_category_pages(self, client: httpx.AsyncClient) -> None:
         """Crawl all category pages to find list URLs."""
-        url = START_URL
+        url = self.start_url
         page_num = 1
 
         with Progress(
@@ -227,10 +247,10 @@ class YearEndListsCrawler:
     async def crawl(self) -> list[CriticList]:
         """Run the full crawl."""
         async with httpx.AsyncClient(
-            headers={"User-Agent": "music-2025-crawler/1.0 (educational project)"},
+            headers={"User-Agent": "music-yearend-crawler/1.0 (educational project)"},
             timeout=30.0,
         ) as client:
-            console.print("[cyan]Phase 1: Discovering list URLs...[/cyan]")
+            console.print(f"[cyan]Phase 1: Discovering {self.year} list URLs...[/cyan]")
             await self.crawl_category_pages(client)
             console.print(f"[green]Found {len(self.list_urls)} lists to crawl[/green]")
 
@@ -247,6 +267,7 @@ class YearEndListsCrawler:
                 "url": lst.url,
                 "title": lst.title,
                 "critic": lst.critic,
+                "year": lst.year,
                 "albums": [asdict(a) for a in lst.albums],
             }
             for lst in self.lists
@@ -255,9 +276,9 @@ class YearEndListsCrawler:
         console.print(f"[green]Saved {len(self.lists)} lists to {output_path}[/green]")
 
 
-async def run_crawler(output: Path, delay: float = 0.5) -> list[CriticList]:
+async def run_crawler(output: Path, year: int = 2025, delay: float = 0.5) -> list[CriticList]:
     """Main entry point for the crawler."""
-    crawler = YearEndListsCrawler(delay=delay)
+    crawler = YearEndListsCrawler(year=year, delay=delay)
     lists = await crawler.crawl()
     crawler.save(output)
     return lists
