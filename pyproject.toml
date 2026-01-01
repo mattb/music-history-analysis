@@ -12,6 +12,7 @@ dependencies = [
     "lxml>=5.0.0",
     "spotipy>=2.23.0",
     "musicbrainzngs>=0.7.1",
+    "pylast>=5.0.0",
 ]
 
 [project.scripts]

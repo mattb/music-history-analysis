@@ -1,32 +1,76 @@
-"""CLI for Last.fm listening history analysis."""
+"""CLI for Last.fm listening history analysis - refactored with command groups."""
 
 import typer
 from pathlib import Path
-from datetime import datetime, timezone
 from typing import Optional
 from rich.console import Console
-from rich.table import Table
+import httpx
 
-from . import data
+from . import data, lastfm_api
+from .commands import listen, critics, history, metadata, spotify
 
-app = typer.Typer(help="Analyze your Last.fm listening history")
+app = typer.Typer(
+    help="Analyze your Last.fm listening history.",
+    no_args_is_help=True,
+)
 console = Console()
 
-# Default CSV path - can be overridden
-DEFAULT_CSV = Path(__file__).parent.parent / "recenttracks-biddulph-1767217094.csv"
+
+def get_csv_path(csv: Optional[Path] = None) -> Path:
+    """Get CSV path from argument, glob, or error."""
+    if csv and csv.exists():
+        return csv
+
+    # Auto-detect from glob
+    csvs = list(Path.cwd().glob("recenttracks-*.csv"))
+    if csvs:
+        return sorted(csvs)[-1]  # Most recent
+
+    console.print("[red]No CSV found. Provide --csv or place recenttracks-*.csv in current dir[/red]")
+    raise typer.Exit(1)
 
 
-def get_csv_path(csv: Optional[Path]) -> Path:
-    """Get CSV path, using default if not specified."""
-    return csv or DEFAULT_CSV
+def get_critics_path(year: int) -> Path:
+    """Get the default critics JSON path for a given year."""
+    return Path.cwd() / f"critics-{year}.json"
 
 
+# Global options callback
+@app.callback()
+def main(
+    ctx: typer.Context,
+    csv: Optional[Path] = typer.Option(None, "--csv", "-c",
+        help="Path to Last.fm CSV export"),
+    year: Optional[int] = typer.Option(None, "--year", "-y",
+        help="Filter to specific year"),
+    verbose: bool = typer.Option(False, "--verbose", "-v",
+        help="Verbose output"),
+):
+    """Analyze your Last.fm listening history."""
+    ctx.ensure_object(dict)
+    ctx.obj["csv"] = csv
+    ctx.obj["year"] = year
+    ctx.obj["verbose"] = verbose
+
+
+# Register command groups
+app.add_typer(listen.app, name="listen", help="Analyze your listening patterns")
+app.add_typer(critics.app, name="critics", help="Cross-reference with music critics")
+app.add_typer(history.app, name="history", help="Long-term taste evolution")
+app.add_typer(metadata.app, name="metadata", help="MusicBrainz metadata enrichment")
+app.add_typer(spotify.app, name="spotify", help="Spotify integration")
+
+
+# Root-level commands (most common operations)
 @app.command()
 def stats(
-    csv: Optional[Path] = typer.Option(None, "--csv", "-c", help="Path to Last.fm CSV export"),
-    year: Optional[int] = typer.Option(None, "--year", "-y", help="Filter to specific year"),
+    ctx: typer.Context,
 ):
     """Show overall listening statistics."""
+    # Get global options from context
+    csv = ctx.obj.get("csv") if ctx.obj else None
+    year = ctx.obj.get("year") if ctx.obj else None
+
     df = data.load_scrobbles(get_csv_path(csv))
 
     if year:
@@ -50,708 +94,101 @@ def stats(
     console.print(f"Unique tracks: {unique_tracks:,}")
 
 
-@app.command()
-def top(
-    what: str = typer.Argument("artists", help="What to show: artists, albums, or tracks"),
-    csv: Optional[Path] = typer.Option(None, "--csv", "-c", help="Path to Last.fm CSV export"),
-    year: Optional[int] = typer.Option(None, "--year", "-y", help="Filter to specific year"),
-    limit: int = typer.Option(20, "--limit", "-n", help="Number of results"),
-    unselected: bool = typer.Option(False, "--unselected", "-u", help="Only show artists not picked by critics (requires --year)"),
-    new_album: bool = typer.Option(False, "--new-album", "-a", help="Only artists with an album first heard that year"),
+@app.command(name="fetch-api-key")
+def fetch_api_key(
+    api_key: Optional[str] = typer.Option(None, "--key", "-k", help="Last.fm API key"),
 ):
-    """Show top artists, albums, or tracks by play count."""
-    df_full = data.load_scrobbles(get_csv_path(csv))
+    """Set up Last.fm API key for downloading scrobbles.
 
-    # Find artists with "new" albums (first heard in the target year) before filtering
-    new_album_artists = set()
-    if new_album:
-        if not year:
-            console.print("[red]--new-album requires --year to be specified[/red]")
-            raise typer.Exit(1)
-        if what != "artists":
-            console.print("[red]--new-album only works with 'artists'[/red]")
-            raise typer.Exit(1)
-
-        from . import crossref
-        # Find first play of each album across all time
-        df_with_albums = df_full[df_full["album"] != ""].copy()
-        first_plays = df_with_albums.sort_values("timestamp").groupby(
-            ["artist", "album"]
-        ).first().reset_index()
-        # Filter to albums first heard in the target year
-        first_plays_year = first_plays[first_plays["year"] == year]
-        # Get normalized artist names
-        for artist in first_plays_year["artist"].unique():
-            new_album_artists.add(crossref.normalize_for_matching(artist))
-
-    df = data.filter_by_year(df_full, year) if year else df_full
-
-    # Build set of critic-selected artists if filtering
-    critics_artists = set()
-    if unselected:
-        if not year:
-            console.print("[red]--unselected requires --year to be specified[/red]")
-            raise typer.Exit(1)
-        if what != "artists":
-            console.print("[red]--unselected only works with 'artists'[/red]")
-            raise typer.Exit(1)
-
-        from . import crossref
-        import json
-        json_path = get_critics_path(year)
-        try:
-            with open(json_path) as f:
-                raw_data = json.load(f)
-            for lst in raw_data:
-                for album in lst['albums']:
-                    if album['artist']:
-                        critics_artists.add(crossref.normalize_for_matching(album['artist']))
-        except FileNotFoundError:
-            console.print(f"[red]No critics data for {year}. Run 'lastfm crawl --year {year}' first.[/red]")
-            raise typer.Exit(1)
-
-    if what == "artists":
-        needs_filtering = unselected or new_album
-        result = data.top_artists(df, limit if not needs_filtering else limit * 10)
-
-        if needs_filtering:
-            from . import crossref
-            masks = []
-            if unselected:
-                masks.append(result['artist'].apply(
-                    lambda x: crossref.normalize_for_matching(x) not in critics_artists
-                ))
-            if new_album:
-                masks.append(result['artist'].apply(
-                    lambda x: crossref.normalize_for_matching(x) in new_album_artists
-                ))
-            # Combine masks with AND
-            combined_mask = masks[0]
-            for m in masks[1:]:
-                combined_mask = combined_mask & m
-            result = result[combined_mask].head(limit)
-
-            # Build title
-            if unselected and new_album:
-                title = f"Top {limit} Artists with New Albums NOT Picked by Critics ({year})"
-            elif unselected:
-                title = f"Top {limit} Artists NOT Picked by Critics ({year})"
-            else:
-                title = f"Top {limit} Artists with New Albums ({year})"
-        else:
-            result = result.head(limit)
-            title = f"Top {limit} Artists" + (f" ({year})" if year else "")
-
-        table = Table(title=title)
-        table.add_column("Artist", style="cyan")
-        table.add_column("Plays", justify="right", style="green")
-        for _, row in result.iterrows():
-            table.add_row(row["artist"], str(row["plays"]))
-
-    elif what == "albums":
-        result = data.top_albums(df, limit)
-        table = Table(title=f"Top {limit} Albums" + (f" ({year})" if year else ""))
-        table.add_column("Artist", style="cyan")
-        table.add_column("Album", style="yellow")
-        table.add_column("Plays", justify="right", style="green")
-        for _, row in result.iterrows():
-            table.add_row(row["artist"], row["album"], str(row["plays"]))
-
-    elif what == "tracks":
-        result = data.top_tracks(df, limit)
-        table = Table(title=f"Top {limit} Tracks" + (f" ({year})" if year else ""))
-        table.add_column("Artist", style="cyan")
-        table.add_column("Track", style="yellow")
-        table.add_column("Plays", justify="right", style="green")
-        for _, row in result.iterrows():
-            table.add_row(row["artist"], row["track"], str(row["plays"]))
-
+    Get your API key from: https://www.last.fm/api/account/create
+    """
+    if api_key:
+        lastfm_api.save_api_key(api_key)
+        console.print("[green]✓ API key saved successfully![/green]")
+        console.print(f"[dim]Stored in: {Path.home() / '.cache' / 'lastfm-analysis' / 'lastfm_api_key.txt'}[/dim]")
     else:
-        console.print(f"[red]Unknown type: {what}. Use artists, albums, or tracks.[/red]")
-        raise typer.Exit(1)
-
-    console.print(table)
-
-
-@app.command()
-def discovered(
-    csv: Optional[Path] = typer.Option(None, "--csv", "-c", help="Path to Last.fm CSV export"),
-    year: int = typer.Option(2025, "--year", "-y", help="Year to check discoveries"),
-    limit: int = typer.Option(30, "--limit", "-n", help="Number of results"),
-):
-    """Show artists discovered (first played) in a given year."""
-    df = data.load_scrobbles(get_csv_path(csv))
-    result = data.artists_discovered_in_year(df, year)
-
-    table = Table(title=f"Artists Discovered in {year}")
-    table.add_column("Artist", style="cyan")
-    table.add_column("First Played", style="yellow")
-    table.add_column("First Track", style="dim")
-    table.add_column(f"Plays in {year}", justify="right", style="green")
-
-    for _, row in result.head(limit).iterrows():
-        table.add_row(
-            row["artist"],
-            row["timestamp"].strftime("%Y-%m-%d"),
-            row["track"][:40] + "..." if len(row["track"]) > 40 else row["track"],
-            str(int(row["plays_in_year"])),
-        )
-
-    console.print(table)
-    console.print(f"\nTotal new artists in {year}: {len(result)}")
-
-
-@app.command()
-def first_play(
-    artist: str = typer.Argument(..., help="Artist name to look up"),
-    csv: Optional[Path] = typer.Option(None, "--csv", "-c", help="Path to Last.fm CSV export"),
-):
-    """Show when you first played an artist."""
-    df = data.load_scrobbles(get_csv_path(csv))
-
-    # Case-insensitive search
-    matches = df[df["artist"].str.lower() == artist.lower()]
-
-    if matches.empty:
-        # Try partial match
-        partial = df[df["artist"].str.lower().str.contains(artist.lower(), regex=False)]
-        if partial.empty:
-            console.print(f"[red]No plays found for '{artist}'[/red]")
-            raise typer.Exit(1)
+        stored_key = lastfm_api.get_api_key()
+        if stored_key:
+            console.print(f"[green]API key found:[/green] {stored_key[:8]}...")
+            console.print(f"[dim]Stored in: {Path.home() / '.cache' / 'lastfm-analysis' / 'lastfm_api_key.txt'}[/dim]")
         else:
-            console.print(f"[yellow]No exact match. Did you mean one of these?[/yellow]")
-            for a in partial["artist"].unique()[:10]:
-                console.print(f"  - {a}")
-            raise typer.Exit(1)
-
-    first = matches.sort_values("timestamp").iloc[0]
-    total_plays = len(matches)
-
-    console.print(f"\n[bold]{first['artist']}[/bold]")
-    console.print(f"First play: {first['timestamp']:%Y-%m-%d %H:%M} UTC")
-    console.print(f"First track: {first['track']}")
-    if first["album"]:
-        console.print(f"First album: {first['album']}")
-    console.print(f"Total plays: {total_plays:,}")
+            console.print("[yellow]No API key found.[/yellow]")
+            console.print("\nTo get an API key:")
+            console.print("1. Go to [cyan]https://www.last.fm/api/account/create[/cyan]")
+            console.print("2. Fill out the form (app name can be anything)")
+            console.print("3. Run: [cyan]lastfm fetch-api-key --key YOUR_API_KEY[/cyan]")
 
 
-@app.command()
-def plays(
-    csv: Optional[Path] = typer.Option(None, "--csv", "-c", help="Path to Last.fm CSV export"),
-    year: Optional[int] = typer.Option(None, "--year", "-y", help="Filter to specific year"),
-    days: Optional[int] = typer.Option(None, "--days", "-d", help="Filter to last N days"),
-    artist: Optional[str] = typer.Option(None, "--artist", "-a", help="Filter to specific artist"),
-    limit: int = typer.Option(50, "--limit", "-n", help="Number of results"),
+@app.command(name="fetch")
+def fetch_scrobbles(
+    username: str = typer.Argument(..., help="Last.fm username"),
+    output: Optional[Path] = typer.Option(None, "--output", "-o", help="Output CSV path"),
+    api_key: Optional[str] = typer.Option(None, "--api-key", help="Last.fm API key (or use fetch-api-key)"),
+    max_pages: Optional[int] = typer.Option(None, "--max-pages", help="Max pages to fetch (for testing, default: all)"),
+    start_year: Optional[int] = typer.Option(None, "--start-year", help="Only fetch scrobbles from this year onwards"),
 ):
-    """List recent plays with optional filters."""
-    df = data.load_scrobbles(get_csv_path(csv))
+    """Download your complete Last.fm scrobble history via API.
 
-    if year:
-        df = data.filter_by_year(df, year)
+    Downloads all scrobbles and saves to CSV in the same format as the
+    external export website, compatible with all analysis commands.
+    """
+    import time
 
-    if days:
-        cutoff = datetime.now(timezone.utc).replace(
-            hour=0, minute=0, second=0, microsecond=0
-        ) - pd.Timedelta(days=days)
-        df = df[df["timestamp"] >= cutoff]
+    # Get API key
+    if not api_key:
+        api_key = lastfm_api.get_api_key()
 
-    if artist:
-        df = df[df["artist"].str.lower().str.contains(artist.lower(), regex=False)]
-
-    # Sort by timestamp descending (most recent first)
-    df = df.sort_values("timestamp", ascending=False).head(limit)
-
-    table = Table(title=f"Recent Plays ({len(df)} shown)")
-    table.add_column("Time", style="dim")
-    table.add_column("Artist", style="cyan")
-    table.add_column("Track", style="yellow")
-    table.add_column("Album", style="dim")
-
-    for _, row in df.iterrows():
-        table.add_row(
-            row["timestamp"].strftime("%Y-%m-%d %H:%M"),
-            row["artist"],
-            row["track"][:35] + "..." if len(row["track"]) > 35 else row["track"],
-            (row["album"][:25] + "..." if len(row["album"]) > 25 else row["album"]) if row["album"] else "",
-        )
-
-    console.print(table)
-
-
-@app.command("2025")
-def year_2025(
-    csv: Optional[Path] = typer.Option(None, "--csv", "-c", help="Path to Last.fm CSV export"),
-):
-    """Special analysis for 2025 - new discoveries and top listens."""
-    df = data.load_scrobbles(get_csv_path(csv))
-
-    # Get 2025 plays
-    df_2025 = data.filter_by_year(df, 2025)
-
-    console.print("\n[bold magenta]═══ 2025 Listening Summary ═══[/bold magenta]\n")
-
-    # Basic stats
-    console.print(f"[bold]Total plays in 2025:[/bold] {len(df_2025):,}")
-    console.print(f"[bold]Unique artists:[/bold] {df_2025['artist'].nunique():,}")
-    console.print(f"[bold]Unique albums:[/bold] {df_2025[df_2025['album'] != '']['album'].nunique():,}")
-
-    # New discoveries
-    discovered = data.artists_discovered_in_year(df, 2025)
-    console.print(f"[bold]New artists discovered:[/bold] {len(discovered):,}")
-
-    console.print("\n[bold cyan]Top 10 New Discoveries of 2025:[/bold cyan]")
-    table = Table(show_header=True)
-    table.add_column("Artist", style="cyan")
-    table.add_column("First Track", style="dim")
-    table.add_column("Plays", justify="right", style="green")
-
-    for _, row in discovered.head(10).iterrows():
-        table.add_row(
-            row["artist"],
-            row["track"][:40] + "..." if len(row["track"]) > 40 else row["track"],
-            str(int(row["plays_in_year"])),
-        )
-    console.print(table)
-
-    console.print("\n[bold yellow]Top 10 Artists Overall in 2025:[/bold yellow]")
-    top_artists = data.top_artists(df_2025, 10)
-    table2 = Table(show_header=True)
-    table2.add_column("Artist", style="cyan")
-    table2.add_column("Plays", justify="right", style="green")
-
-    for _, row in top_artists.iterrows():
-        table2.add_row(row["artist"], str(row["plays"]))
-    console.print(table2)
-
-
-# Need pandas import for Timedelta
-import pandas as pd
-import asyncio
-
-
-def get_critics_path(year: int) -> Path:
-    """Get the default critics JSON path for a given year."""
-    return Path(__file__).parent.parent / f"critics-{year}.json"
-
-
-@app.command()
-def crawl(
-    year: int = typer.Option(
-        2025,
-        "--year", "-y",
-        help="Year to crawl (2011-2025)",
-    ),
-    output: Optional[Path] = typer.Option(
-        None,
-        "--output", "-o",
-        help="Output JSON file path (default: critics-{year}.json)",
-    ),
-    delay: float = typer.Option(
-        0.5,
-        "--delay", "-d",
-        help="Delay between requests in seconds",
-    ),
-):
-    """Crawl yearendlists.com for album lists."""
-    from . import crawler
-
-    if year < 2011 or year > 2025:
-        console.print("[red]Year must be between 2011 and 2025[/red]")
+    if not api_key:
+        console.print("[red]No API key found![/red]")
+        console.print("Run [cyan]lastfm fetch-api-key --help[/cyan] to set one up.")
         raise typer.Exit(1)
 
-    output_path = output or get_critics_path(year)
+    # Determine output path
+    if not output:
+        timestamp = int(time.time())
+        output = Path.cwd() / f"recenttracks-{username}-{timestamp}.csv"
 
-    console.print(f"[bold]Crawling yearendlists.com for {year} album lists...[/bold]\n")
-    lists = asyncio.run(crawler.run_crawler(output_path, year=year, delay=delay))
-
-    # Summary
-    total_albums = sum(len(lst.albums) for lst in lists)
-    console.print(f"\n[bold green]Done![/bold green]")
-    console.print(f"  Lists crawled: {len(lists)}")
-    console.print(f"  Total album entries: {total_albums:,}")
-    console.print(f"  Output: {output_path}")
-
-
-@app.command()
-def matched(
-    csv: Optional[Path] = typer.Option(None, "--csv", "-c", help="Path to Last.fm CSV export"),
-    critics_json: Optional[Path] = typer.Option(None, "--critics", help="Path to critics JSON"),
-    year: int = typer.Option(2025, "--year", "-y", help="Year to analyze"),
-    limit: int = typer.Option(30, "--limit", "-n", help="Number of results"),
-):
-    """Show critic-loved albums you've listened to."""
-    from . import crossref
-
-    df = data.load_scrobbles(get_csv_path(csv))
-    critics_data = crossref.load_critics_data(critics_json or get_critics_path(year))
-    results = crossref.match_with_history(critics_data, df, year=year)
-
-    console.print(f"\n[bold cyan]Albums You've Heard That Critics Love ({year})[/bold cyan]")
-    console.print(f"Matched {len(results['matched'])} of {results['stats']['total_critics_albums']} critic-listed albums\n")
-
-    table = Table(show_header=True)
-    table.add_column("#", justify="right", style="dim", width=3)
-    table.add_column("Artist", style="cyan")
-    table.add_column("Album", style="yellow")
-    table.add_column("Critics", justify="right", style="green")
-    table.add_column("Your Plays", justify="right", style="magenta")
-
-    for i, m in enumerate(results['matched'][:limit], 1):
-        table.add_row(
-            str(i),
-            m.artist,
-            m.album[:35] + "..." if len(m.album) > 35 else m.album,
-            str(m.critics_count),
-            str(m.your_plays),
-        )
-
-    console.print(table)
-
-
-@app.command()
-def unheard(
-    csv: Optional[Path] = typer.Option(None, "--csv", "-c", help="Path to Last.fm CSV export"),
-    critics_json: Optional[Path] = typer.Option(None, "--critics", help="Path to critics JSON"),
-    year: int = typer.Option(2025, "--year", "-y", help="Year to analyze"),
-    limit: int = typer.Option(30, "--limit", "-n", help="Number of results"),
-    known_artists: bool = typer.Option(False, "--known", "-k", help="Only show artists you've heard"),
-    weighted: bool = typer.Option(False, "--weighted", "-w", help="Weight by critic overlap with your taste"),
-):
-    """Show highly-rated albums you haven't listened to."""
-    from . import crossref
-    import json
-
-    df = data.load_scrobbles(get_csv_path(csv))
-    json_path = critics_json or get_critics_path(year)
-    critics_data = crossref.load_critics_data(json_path)
-    results = crossref.match_with_history(critics_data, df, year=year)
-
-    unheard_list = results['unheard']
-    if known_artists:
-        unheard_list = [u for u in unheard_list if u['heard_artist']]
-
-    if weighted:
-        # Calculate overlap score per critic
-        with open(json_path) as f:
-            raw_data = json.load(f)
-
-        df_year = df[df['year'] == year]
-        your_albums = set()
-        for _, row in df_year.iterrows():
-            if row['album']:
-                key = (crossref.normalize_for_matching(row['artist']),
-                       crossref.normalize_for_matching(row['album']))
-                your_albums.add(key)
-
-        critic_scores = {}
-        for lst in raw_data:
-            critic = lst['critic']
-            total = len(lst['albums'])
-            overlap_count = 0
-            for album in lst['albums']:
-                if album['artist'] and album['title']:
-                    key = (crossref.normalize_for_matching(album['artist']),
-                           crossref.normalize_for_matching(album['title']))
-                    if key in your_albums:
-                        overlap_count += 1
-            # Score is overlap percentage (0-1)
-            critic_scores[critic] = overlap_count / total if total > 0 else 0
-
-        # Build album -> critics mapping for unheard albums
-        album_critics = {}
-        for lst in raw_data:
-            critic = lst['critic']
-            for album in lst['albums']:
-                if album['artist'] and album['title']:
-                    key = (crossref.normalize_for_matching(album['artist']),
-                           crossref.normalize_for_matching(album['title']))
-                    if key not in your_albums:
-                        if key not in album_critics:
-                            album_critics[key] = {'artist': album['artist'], 'album': album['title'], 'critics': []}
-                        album_critics[key]['critics'].append(critic)
-
-        # Calculate weighted score for each unheard album
-        for u in unheard_list:
-            key = (crossref.normalize_for_matching(u['artist']),
-                   crossref.normalize_for_matching(u['album']))
-            if key in album_critics:
-                critics = album_critics[key]['critics']
-                # Weighted score = sum of overlap scores from critics who listed it
-                u['weighted_score'] = sum(critic_scores.get(c, 0) for c in critics)
-            else:
-                u['weighted_score'] = 0
-
-        # Sort by weighted score
-        unheard_list = sorted(unheard_list, key=lambda x: -x['weighted_score'])
-
-        title = f"Albums Recommended By Critics Who Share Your Taste ({year})"
-        console.print(f"\n[bold cyan]{title}[/bold cyan]")
-        console.print("[dim]Weighted by overlap with each critic's list[/dim]\n")
-
-        table = Table(show_header=True)
-        table.add_column("#", justify="right", style="dim", width=3)
-        table.add_column("Artist", style="cyan")
-        table.add_column("Album", style="yellow")
-        table.add_column("Score", justify="right", style="magenta")
-        table.add_column("Critics", justify="right", style="green")
-
-        for i, u in enumerate(unheard_list[:limit], 1):
-            table.add_row(
-                str(i),
-                u['artist'],
-                u['album'][:35] + "..." if len(u['album']) > 35 else u['album'],
-                f"{u['weighted_score']:.2f}",
-                str(u['critics_count']),
-            )
-    else:
-        title = f"Unheard Albums From Artists You Know ({year})" if known_artists else f"Highly-Rated Albums You Haven't Heard ({year})"
-        console.print(f"\n[bold cyan]{title}[/bold cyan]\n")
-
-        table = Table(show_header=True)
-        table.add_column("#", justify="right", style="dim", width=3)
-        table.add_column("Artist", style="cyan")
-        table.add_column("Album", style="yellow")
-        table.add_column("Critics", justify="right", style="green")
-        table.add_column("Artist Plays", justify="right", style="dim")
-
-        for i, u in enumerate(unheard_list[:limit], 1):
-            table.add_row(
-                str(i),
-                u['artist'],
-                u['album'][:35] + "..." if len(u['album']) > 35 else u['album'],
-                str(u['critics_count']),
-                str(u['artist_plays']) if u['artist_plays'] else "-",
-            )
-
-    console.print(table)
-
-
-@app.command()
-def overlap(
-    csv: Optional[Path] = typer.Option(None, "--csv", "-c", help="Path to Last.fm CSV export"),
-    critics_json: Optional[Path] = typer.Option(None, "--critics", help="Path to critics JSON"),
-    year: int = typer.Option(2025, "--year", "-y", help="Year to analyze"),
-):
-    """Show summary of overlap between your listening and critics' picks."""
-    from . import crossref
-
-    df = data.load_scrobbles(get_csv_path(csv))
-    critics_data = crossref.load_critics_data(critics_json or get_critics_path(year))
-    results = crossref.match_with_history(critics_data, df, year=year)
-
-    stats = results['stats']
-
-    console.print(f"\n[bold magenta]═══ Critics vs Your {year} Listening ═══[/bold magenta]\n")
-
-    console.print(f"[bold]Critics' albums:[/bold] {stats['total_critics_albums']}")
-    console.print(f"[bold]Albums you've heard:[/bold] {stats['matched_count']} ({100*stats['matched_count']/stats['total_critics_albums']:.1f}%)")
-    console.print(f"[bold]Your artists in critics' lists:[/bold] {stats['your_artists_in_critics']}")
-
-    # Top matched
-    console.print("\n[bold cyan]Your Most-Played Critic Favorites:[/bold cyan]")
-    table = Table(show_header=True)
-    table.add_column("Artist", style="cyan")
-    table.add_column("Album", style="yellow")
-    table.add_column("Critics", justify="right", style="green")
-    table.add_column("Your Plays", justify="right", style="magenta")
-
-    for m in sorted(results['matched'], key=lambda x: -x.your_plays)[:10]:
-        table.add_row(m.artist, m.album, str(m.critics_count), str(m.your_plays))
-    console.print(table)
-
-    # Your artists that critics love
-    console.print("\n[bold yellow]Your Top Artists With Critic-Listed Albums:[/bold yellow]")
-    table2 = Table(show_header=True)
-    table2.add_column("Artist", style="cyan")
-    table2.add_column("Your Plays", justify="right", style="magenta")
-    table2.add_column("Critic Album", style="yellow")
-    table2.add_column("Lists", justify="right", style="green")
-
-    for artist_data in results['your_top_artists'][:15]:
-        # Show the highest-rated album for this artist
-        best_album = max(artist_data['critic_albums'], key=lambda x: x[2])
-        table2.add_row(
-            artist_data['artist'],
-            str(artist_data['your_plays']),
-            best_album[1][:30] + "..." if len(best_album[1]) > 30 else best_album[1],
-            str(best_album[2]),
-        )
-    console.print(table2)
-
-
-@app.command()
-def critics(
-    csv: Optional[Path] = typer.Option(None, "--csv", "-c", help="Path to Last.fm CSV export"),
-    critics_json: Optional[Path] = typer.Option(None, "--critics", help="Path to critics JSON"),
-    year: int = typer.Option(2025, "--year", "-y", help="Year to analyze"),
-    sort: str = typer.Option("overlap", "--sort", "-s", help="Sort by: overlap, albums, name"),
-):
-    """Show overview of critics and your overlap with each."""
-    from . import crossref
-    import json
-
-    # Load critics data
-    json_path = critics_json or get_critics_path(year)
-    with open(json_path) as f:
-        raw_data = json.load(f)
-
-    # Load your listening data for overlap calculation
-    df = data.load_scrobbles(get_csv_path(csv))
-    df_year = df[df['year'] == year]
-
-    # Build set of your albums (normalized)
-    your_albums = set()
-    for _, row in df_year.iterrows():
-        if row['album']:
-            key = (crossref.normalize_for_matching(row['artist']),
-                   crossref.normalize_for_matching(row['album']))
-            your_albums.add(key)
-
-    # Calculate stats per critic
-    critic_stats = []
-    for lst in raw_data:
-        critic = lst['critic']
-        albums = lst['albums']
-        total = len(albums)
-
-        # Count overlap
-        overlap_count = 0
-        for album in albums:
-            if album['artist'] and album['title']:
-                key = (crossref.normalize_for_matching(album['artist']),
-                       crossref.normalize_for_matching(album['title']))
-                if key in your_albums:
-                    overlap_count += 1
-
-        overlap_pct = (overlap_count / total * 100) if total > 0 else 0
-        critic_stats.append({
-            'critic': critic,
-            'albums': total,
-            'overlap': overlap_count,
-            'overlap_pct': overlap_pct,
-            'url': lst['url'],
-        })
-
-    # Sort
-    if sort == "overlap":
-        critic_stats.sort(key=lambda x: (-x['overlap'], -x['overlap_pct']))
-    elif sort == "albums":
-        critic_stats.sort(key=lambda x: -x['albums'])
-    else:  # name
-        critic_stats.sort(key=lambda x: x['critic'].lower())
-
-    console.print(f"\n[bold magenta]═══ {year} Critics Overview ({len(critic_stats)} critics) ═══[/bold magenta]\n")
-
-    # Summary stats
-    total_albums = sum(c['albums'] for c in critic_stats)
-    avg_albums = total_albums / len(critic_stats)
-    critics_with_overlap = sum(1 for c in critic_stats if c['overlap'] > 0)
-
-    console.print(f"[bold]Total lists:[/bold] {len(critic_stats)}")
-    console.print(f"[bold]Total album entries:[/bold] {total_albums:,}")
-    console.print(f"[bold]Avg albums per list:[/bold] {avg_albums:.1f}")
-    console.print(f"[bold]Critics with overlap:[/bold] {critics_with_overlap} ({100*critics_with_overlap/len(critic_stats):.0f}%)\n")
-
-    table = Table(show_header=True)
-    table.add_column("Critic", style="cyan")
-    table.add_column("Albums", justify="right")
-    table.add_column("Overlap", justify="right", style="green")
-    table.add_column("%", justify="right", style="dim")
-
-    for c in critic_stats:
-        overlap_str = str(c['overlap']) if c['overlap'] > 0 else "-"
-        pct_str = f"{c['overlap_pct']:.0f}%" if c['overlap'] > 0 else "-"
-        table.add_row(
-            c['critic'],
-            str(c['albums']),
-            overlap_str,
-            pct_str,
-        )
-
-    console.print(table)
-
-
-@app.command()
-def artist_lists(
-    artist: str = typer.Argument(..., help="Artist name to search for"),
-    critics_json: Optional[Path] = typer.Option(None, "--critics", help="Path to critics JSON"),
-    year: int = typer.Option(2025, "--year", "-y", help="Year to search"),
-):
-    """Show which critics listed a given artist."""
-    import json
-    from . import crossref
-
-    json_path = critics_json or get_critics_path(year)
-    with open(json_path) as f:
-        raw_data = json.load(f)
-
-    # Normalize search term
-    search_norm = crossref.normalize_for_matching(artist)
-
-    # Find all matches
-    matches = []
-    for lst in raw_data:
-        critic = lst['critic']
-        for album in lst['albums']:
-            if album['artist']:
-                artist_norm = crossref.normalize_for_matching(album['artist'])
-                if search_norm in artist_norm or artist_norm in search_norm:
-                    matches.append({
-                        'critic': critic,
-                        'artist': album['artist'],
-                        'album': album['title'],
-                        'rank': album['rank'],
-                    })
-
-    if not matches:
-        # Try partial match
-        partial = []
-        for lst in raw_data:
-            for album in lst['albums']:
-                if album['artist'] and artist.lower() in album['artist'].lower():
-                    partial.append(album['artist'])
-
-        if partial:
-            console.print(f"[yellow]No exact match for '{artist}'. Did you mean:[/yellow]")
-            for a in sorted(set(partial))[:10]:
-                console.print(f"  - {a}")
+    # Fetch scrobbles
+    api = lastfm_api.LastFMAPI(api_key)
+    try:
+        count = api.fetch_all_scrobbles(username, output, max_pages=max_pages, start_year=start_year)
+        if count > 0:
+            console.print(f"\n[green]✓ Success![/green] Ready to analyze:")
+            console.print(f"  [cyan]lastfm --csv {output.name} stats[/cyan]")
+    except httpx.HTTPStatusError as e:
+        if e.response.status_code == 403:
+            console.print("[red]Invalid API key![/red]")
+            console.print("Run [cyan]lastfm fetch-api-key --help[/cyan] to update it.")
+        elif e.response.status_code == 404:
+            console.print(f"[red]User not found:[/red] {username}")
+        elif e.response.status_code == 500:
+            console.print("[red]Last.fm API Error (500 Internal Server Error)[/red]")
+            try:
+                error_data = e.response.json()
+                if "message" in error_data:
+                    console.print(f"Server message: {error_data['message']}")
+            except:
+                console.print(f"Response: {e.response.text[:200]}")
         else:
-            console.print(f"[red]No critics listed '{artist}'[/red]")
+            console.print(f"[red]HTTP Error {e.response.status_code}:[/red] {e}")
         raise typer.Exit(1)
-
-    # Group by album
-    from collections import defaultdict
-    albums = defaultdict(list)
-    for m in matches:
-        albums[(m['artist'], m['album'])].append((m['critic'], m['rank']))
-
-    console.print(f"\n[bold cyan]{matches[0]['artist']}[/bold cyan] appears on [bold]{len(set(m['critic'] for m in matches))}[/bold] critics' {year} lists\n")
-
-    table = Table(show_header=True)
-    table.add_column("Album", style="yellow")
-    table.add_column("Critics", justify="right", style="green")
-    table.add_column("Listed By", no_wrap=False)
-
-    for (artist_name, album), critics_list in sorted(albums.items(), key=lambda x: -len(x[1])):
-        critics_str = ", ".join(sorted(set(c[0] for c in critics_list)))
-        table.add_row(
-            album,
-            str(len(critics_list)),
-            critics_str,
-        )
-
-    console.print(table)
+    except Exception as e:
+        console.print(f"[red]Error:[/red] {e}")
+        raise typer.Exit(1)
 
 
 @app.command()
 def artist(
+    ctx: typer.Context,
     artist_name: str = typer.Argument(..., help="Artist name to look up"),
-    csv: Optional[Path] = typer.Option(None, "--csv", "-c", help="Path to Last.fm CSV export"),
 ):
     """Show comprehensive artist summary across all years."""
     from . import crossref
     from collections import defaultdict
     import json
+    from rich.table import Table
+
+    csv = ctx.obj.get("csv") if ctx.obj else None
 
     df = data.load_scrobbles(get_csv_path(csv))
 
@@ -894,16 +331,455 @@ def artist(
 
 
 @app.command()
-def review(
-    csv: Optional[Path] = typer.Option(None, "--csv", "-c", help="Path to Last.fm CSV export"),
-    critics_json: Optional[Path] = typer.Option(None, "--critics", help="Path to critics JSON"),
-    year: int = typer.Option(2025, "--year", "-y", help="Year to review"),
-    html: Optional[Path] = typer.Option(None, "--html", help="Generate HTML report to this path"),
+def overview(
+    ctx: typer.Context,
+    html: Optional[Path] = typer.Option(None, "--html", help="Export to HTML file"),
 ):
-    """Generate a comprehensive year-in-review of your listening."""
+    """Generate comprehensive all-time listening overview."""
     from . import crossref
     from collections import defaultdict
     import json
+    from rich.table import Table
+
+    csv = ctx.obj.get("csv") if ctx.obj else None
+
+    df_full = data.load_scrobbles(get_csv_path(csv))
+
+    if df_full.empty:
+        console.print("[red]No listening data found[/red]")
+        raise typer.Exit(1)
+
+    # ============ GATHER ALL DATA ============
+
+    # Basic all-time stats
+    total_plays = len(df_full)
+    unique_artists = df_full["artist"].nunique()
+    unique_albums = df_full[df_full["album"] != ""]["album"].nunique()
+    unique_tracks = df_full["track"].nunique()
+
+    first_scrobble = df_full["timestamp"].min()
+    last_scrobble = df_full["timestamp"].max()
+    years_of_data = last_scrobble.year - first_scrobble.year + 1
+
+    # Plays by year
+    plays_by_year = df_full.groupby("year").size().to_dict()
+    all_years = sorted(plays_by_year.keys())
+    peak_year = max(plays_by_year.items(), key=lambda x: x[1])
+    avg_plays_per_year = total_plays / years_of_data if years_of_data > 0 else 0
+
+    # Top artists all-time with yearly breakdown
+    top_artists_all = data.top_artists(df_full, 25)
+    artist_contexts = []
+    for _, row in top_artists_all.iterrows():
+        artist_name = row["artist"]
+        artist_plays = row["plays"]
+        artist_df = df_full[df_full["artist"] == artist_name]
+
+        first_play = artist_df["timestamp"].min()
+        years_active = artist_df["year"].nunique()
+        yearly_plays = artist_df.groupby("year").size().to_dict()
+
+        # Create sparkline data for all years
+        sparkline_data = [yearly_plays.get(y, 0) for y in all_years]
+
+        artist_contexts.append({
+            "name": artist_name,
+            "plays": artist_plays,
+            "first_year": first_play.year,
+            "years_active": years_active,
+            "sparkline_data": sparkline_data,
+        })
+
+    # Top albums all-time
+    top_albums_all = data.top_albums(df_full, 25)
+    album_contexts = []
+    for _, row in top_albums_all.iterrows():
+        artist_name = row["artist"]
+        album_name = row["album"]
+        plays = row["plays"]
+
+        # When did you first hear this album?
+        album_df = df_full[(df_full["artist"] == artist_name) & (df_full["album"] == album_name)]
+        first_play = album_df["timestamp"].min()
+        years_active = album_df["year"].nunique()
+
+        album_contexts.append({
+            "artist": artist_name,
+            "album": album_name,
+            "plays": plays,
+            "first_year": first_play.year,
+            "years_active": years_active,
+        })
+
+    # Discovery and abandonment patterns
+    discoveries_by_year = {}
+    for year in all_years:
+        discovered = data.artists_discovered_in_year(df_full, year)
+        discoveries_by_year[year] = len(discovered)
+
+    # Consistency: artists played every year
+    artist_year_counts = df_full.groupby("artist")["year"].nunique()
+    consistent_artists = artist_year_counts[artist_year_counts >= min(10, years_of_data - 1)].sort_values(ascending=False)
+
+    # Peak obsessions: artist + their peak year
+    peak_obsessions = []
+    for artist_name in df_full["artist"].unique()[:100]:  # Sample top artists
+        artist_df = df_full[df_full["artist"] == artist_name]
+        yearly = artist_df.groupby("year").size()
+        if len(yearly) > 0:
+            peak_year_artist = yearly.idxmax()
+            peak_plays = yearly.max()
+            total_plays = len(artist_df)
+            if peak_plays >= 50:  # Significant obsession
+                peak_obsessions.append({
+                    "artist": artist_name,
+                    "year": peak_year_artist,
+                    "plays": peak_plays,
+                    "total": total_plays,
+                    "concentration": peak_plays / total_plays * 100,
+                })
+    peak_obsessions = sorted(peak_obsessions, key=lambda x: -x["plays"])[:15]
+
+    # ============ CRITICS DATA (ALL YEARS) ============
+    critics_all_time_stats = None
+    top_aligned_critics = []
+    most_acclaimed_albums = []
+
+    # Load all available critics years
+    all_critics_data = []
+    for check_year in range(2011, 2026):
+        json_path = get_critics_path(check_year)
+        if json_path.exists():
+            try:
+                with open(json_path) as f:
+                    year_data = json.load(f)
+                    for lst in year_data:
+                        lst["year"] = check_year  # Tag with year
+                    all_critics_data.extend(year_data)
+            except:
+                pass
+
+    if all_critics_data:
+        # Build set of your albums (all-time)
+        df_with_albums = df_full[df_full["album"] != ""]
+        your_albums = set()
+        your_albums_with_plays = {}
+        for _, row in df_with_albums.iterrows():
+            key = (crossref.normalize_for_matching(row["artist"]),
+                   crossref.normalize_for_matching(row["album"]))
+            your_albums.add(key)
+            if key not in your_albums_with_plays:
+                your_albums_with_plays[key] = 0
+            your_albums_with_plays[key] += 1
+
+        # Calculate per-critic overlap
+        critic_scores = defaultdict(lambda: {"overlap": 0, "total": 0})
+        total_critic_albums = 0
+        total_matched = 0
+
+        for lst in all_critics_data:
+            critic = lst["critic"]
+            for album in lst["albums"]:
+                if album["artist"] and album["title"]:
+                    key = (crossref.normalize_for_matching(album["artist"]),
+                           crossref.normalize_for_matching(album["title"]))
+                    critic_scores[critic]["total"] += 1
+                    total_critic_albums += 1
+                    if key in your_albums:
+                        critic_scores[critic]["overlap"] += 1
+                        total_matched += 1
+
+        # Calculate percentages
+        for critic, scores in critic_scores.items():
+            scores["pct"] = (scores["overlap"] / scores["total"] * 100) if scores["total"] > 0 else 0
+
+        critics_all_time_stats = {
+            "total_albums": total_critic_albums,
+            "matched": total_matched,
+            "overlap_pct": (total_matched / total_critic_albums * 100) if total_critic_albums > 0 else 0,
+        }
+
+        # Top aligned critics
+        top_aligned_critics = sorted(
+            [{"name": k, **v} for k, v in critic_scores.items()],
+            key=lambda x: -x["overlap"]
+        )[:10]
+
+        # Most critically-acclaimed albums you've heard
+        album_critic_counts = defaultdict(lambda: {"artist": "", "album": "", "critics": 0, "plays": 0})
+        for lst in all_critics_data:
+            for album in lst["albums"]:
+                if album["artist"] and album["title"]:
+                    key = (crossref.normalize_for_matching(album["artist"]),
+                           crossref.normalize_for_matching(album["title"]))
+                    if key in your_albums:
+                        album_critic_counts[key]["artist"] = album["artist"]
+                        album_critic_counts[key]["album"] = album["title"]
+                        album_critic_counts[key]["critics"] += 1
+                        album_critic_counts[key]["plays"] = your_albums_with_plays.get(key, 0)
+
+        most_acclaimed_albums = sorted(
+            album_critic_counts.values(),
+            key=lambda x: -x["critics"]
+        )[:15]
+
+    # ============ MUSICBRAINZ METADATA (ALL-TIME) ============
+    from . import musicbrainz_db
+    import sqlite3 as sqlite3_overview
+
+    mb_available = False
+    genre_breakdown_all = []
+    decade_breakdown = defaultdict(int)
+
+    db_stats = musicbrainz_db.get_database_stats()
+    if db_stats and db_stats.get("has_full_schema"):
+        try:
+            conn = sqlite3_overview.connect(musicbrainz_db.MUSICBRAINZ_DB)
+
+            df_albums = df_full[df_full["album"] != ""].copy()
+            df_albums = df_albums[df_albums["artist"].notna()]
+            album_plays = df_albums.groupby(["artist", "album"]).size().reset_index(name="plays")
+
+            genre_plays = defaultdict(int)
+            albums_matched = 0
+
+            for _, row in album_plays.iterrows():
+                info = musicbrainz_db.lookup_release(row["artist"], row["album"], conn)
+                if info:
+                    albums_matched += 1
+
+                    # Genres
+                    if info.genres:
+                        for g in info.genres:
+                            genre_plays[g] += row["plays"]
+
+                    # Decades
+                    if info.year:
+                        decade = (info.year // 10) * 10
+                        decade_breakdown[decade] += row["plays"]
+
+            conn.close()
+
+            if albums_matched > 0:
+                mb_available = True
+
+                # Genre breakdown
+                sorted_genres = sorted(genre_plays.items(), key=lambda x: -x[1])
+                total_genre_plays = sum(g[1] for g in sorted_genres)
+                genre_breakdown_all = [
+                    {"name": g, "plays": p, "pct": p / total_genre_plays * 100}
+                    for g, p in sorted_genres[:15]
+                ]
+
+        except Exception as e:
+            mb_available = False
+
+    # ============ CONSOLE OUTPUT ============
+    if not html:
+        from datetime import datetime
+
+        console.print(f"\n[bold magenta]{'═' * 50}[/bold magenta]")
+        console.print(f"[bold magenta]  YOUR LISTENING OVERVIEW[/bold magenta]")
+        console.print(f"[bold magenta]{'═' * 50}[/bold magenta]\n")
+
+        # The Big Picture
+        console.print("[bold cyan]📊 THE BIG PICTURE[/bold cyan]\n")
+        console.print(f"  [bold]{total_plays:,}[/bold] total scrobbles")
+        console.print(f"  [dim]from[/dim] {first_scrobble:%B %d, %Y} [dim]to[/dim] {last_scrobble:%B %d, %Y}")
+        console.print(f"  [bold]{years_of_data}[/bold] years of listening")
+        console.print(f"  [dim]across[/dim] [bold]{unique_artists:,}[/bold] artists, [bold]{unique_albums:,}[/bold] albums, [bold]{unique_tracks:,}[/bold] tracks")
+        console.print(f"  [dim]Peak year:[/dim] [bold]{peak_year[0]}[/bold] ({peak_year[1]:,} plays)")
+        console.print(f"  [dim]Average:[/dim] {avg_plays_per_year:,.0f} plays/year")
+        console.print()
+
+        # Listening over time (sparkline)
+        console.print("[dim]Listening intensity:[/dim]")
+        max_plays = max(plays_by_year.values())
+        blocks = " ▁▂▃▄▅▆▇█"
+        sparkline = "".join(blocks[min(8, int(plays_by_year.get(y, 0) / max_plays * 8))] for y in all_years)
+        console.print(f"  {all_years[0]} {sparkline} {all_years[-1]}")
+        console.print()
+
+        # All-time favorites
+        console.print("[bold cyan]🎸 YOUR ALL-TIME FAVORITES[/bold cyan]")
+        console.print("[dim]  Top artists across your entire listening history[/dim]\n")
+
+        for i, ctx in enumerate(artist_contexts[:20], 1):
+            # Create sparkline for this artist
+            max_artist_plays = max(ctx["sparkline_data"]) if ctx["sparkline_data"] else 1
+            sparkline = "".join(
+                blocks[min(8, int(p / max_artist_plays * 8))] if max_artist_plays > 0 else " "
+                for p in ctx["sparkline_data"]
+            )
+
+            console.print(f"  {i:2}. [bold]{ctx['name']}[/bold] — {ctx['plays']:,} plays")
+            console.print(f"      [dim]{all_years[0]} {sparkline} {all_years[-1]}[/dim]")
+            console.print(f"      [dim]Fan since {ctx['first_year']} · Active {ctx['years_active']} years[/dim]")
+
+        console.print()
+
+        # Discovery patterns
+        console.print("[bold cyan]🔍 YOUR MUSICAL JOURNEY[/bold cyan]\n")
+        console.print(f"  You've discovered [bold]{unique_artists:,}[/bold] artists over {years_of_data} years")
+        console.print(f"  [dim]Average:[/dim] {unique_artists / years_of_data:.0f} new artists/year\n")
+
+        console.print("[dim]Discovery rate over time:[/dim]")
+        max_discoveries = max(discoveries_by_year.values()) if discoveries_by_year else 1
+        disc_sparkline = "".join(
+            blocks[min(8, int(discoveries_by_year.get(y, 0) / max_discoveries * 8))]
+            for y in all_years
+        )
+        console.print(f"  {all_years[0]} {disc_sparkline} {all_years[-1]}")
+        console.print()
+
+        # Top albums
+        console.print("[bold cyan]💿 YOUR ALL-TIME ALBUMS[/bold cyan]")
+        console.print("[dim]  The records you've lived with[/dim]\n")
+
+        table = Table(show_header=True, box=None)
+        table.add_column("#", style="dim", width=3)
+        table.add_column("Album", style="yellow")
+        table.add_column("Artist", style="cyan")
+        table.add_column("Plays", justify="right", style="green")
+        table.add_column("Years", justify="right", style="dim")
+
+        for i, ctx in enumerate(album_contexts[:15], 1):
+            table.add_row(
+                str(i),
+                ctx["album"][:35] + "..." if len(ctx["album"]) > 35 else ctx["album"],
+                ctx["artist"][:25] + "..." if len(ctx["artist"]) > 25 else ctx["artist"],
+                str(ctx["plays"]),
+                str(ctx["years_active"]),
+            )
+
+        console.print(table)
+        console.print()
+
+        # Consistency
+        if len(consistent_artists) > 0:
+            console.print("[bold cyan]❤️  LONGTIME LOYALTY[/bold cyan]")
+            console.print(f"[dim]  Artists you've played for {min(10, years_of_data - 1)}+ years[/dim]\n")
+
+            for artist, year_count in consistent_artists.head(15).items():
+                artist_total = df_full[df_full["artist"] == artist].shape[0]
+                console.print(f"  [bold]{artist}[/bold] — {artist_total:,} plays across {int(year_count)} years")
+            console.print()
+
+        # Peak obsessions
+        if peak_obsessions:
+            console.print("[bold cyan]🔥 PEAK OBSESSIONS[/bold cyan]")
+            console.print("[dim]  Artists and the years you couldn't stop playing them[/dim]\n")
+
+            for obs in peak_obsessions[:10]:
+                console.print(f"  [bold]{obs['artist']}[/bold] — {obs['year']}")
+                console.print(f"  [dim]{obs['plays']} plays that year ({obs['concentration']:.0f}% of all {obs['artist']} plays)[/dim]")
+            console.print()
+
+        # Critics section
+        if critics_all_time_stats:
+            console.print("[bold cyan]🏆 YOU & THE CRITICS (ALL-TIME)[/bold cyan]")
+            console.print(f"[dim]  Your alignment across {len(all_critics_data)} critic lists (2011-2025)[/dim]\n")
+
+            console.print(f"  Overall alignment: [bold]{critics_all_time_stats['overlap_pct']:.1f}%[/bold]")
+            console.print(f"  [dim]{critics_all_time_stats['matched']:,} of {critics_all_time_stats['total_albums']:,} albums[/dim]\n")
+
+            if top_aligned_critics:
+                console.print("  [bold]Critics who share your taste:[/bold]")
+                for c in top_aligned_critics[:8]:
+                    if c["overlap"] > 0:
+                        console.print(f"    {c['name']}: {c['overlap']}/{c['total']} ({c['pct']:.0f}%)")
+                console.print()
+
+            if most_acclaimed_albums:
+                console.print("  [bold]Your most critically-acclaimed albums:[/bold]\n")
+
+                table = Table(show_header=False, box=None, padding=(0, 2))
+                table.add_column("Album")
+                table.add_column("Plays", justify="right", style="green")
+                table.add_column("Critics", justify="right", style="yellow")
+
+                for a in most_acclaimed_albums[:12]:
+                    table.add_row(
+                        f"{a['artist']} — {a['album']}"[:50],
+                        str(a["plays"]),
+                        f"{a['critics']} lists",
+                    )
+
+                console.print(table)
+                console.print()
+
+        # MusicBrainz metadata
+        if mb_available:
+            if genre_breakdown_all:
+                console.print("[bold cyan]🎸 YOUR SOUND (ALL-TIME)[/bold cyan]")
+                console.print("[dim]  Top genres across your entire listening history[/dim]\n")
+
+                for g in genre_breakdown_all[:10]:
+                    console.print(f"  {g['name']:<25} {g['pct']:>5.1f}%")
+                console.print()
+
+            if decade_breakdown:
+                console.print("[bold cyan]📅 MUSIC BY DECADE[/bold cyan]")
+                console.print("[dim]  When the music you listen to was released[/dim]\n")
+
+                sorted_decades = sorted(decade_breakdown.items())
+                total_decade_plays = sum(decade_breakdown.values())
+
+                for decade, plays in sorted_decades:
+                    pct = plays / total_decade_plays * 100 if total_decade_plays > 0 else 0
+                    decade_label = f"{decade}s" if decade >= 1950 else "Pre-1950"
+                    bar_width = int(pct / 2)
+                    bar = "█" * bar_width
+                    console.print(f"  {decade_label:<10} [green]{bar}[/green] {pct:>5.1f}%")
+                console.print()
+
+        console.print(f"\n[dim]{'─' * 50}[/dim]")
+        console.print(f"[dim]Generated {datetime.now():%Y-%m-%d %H:%M}[/dim]\n")
+
+    else:
+        # HTML output
+        html_content = generate_overview_html(
+            total_plays=total_plays,
+            first_scrobble=first_scrobble,
+            last_scrobble=last_scrobble,
+            years_of_data=years_of_data,
+            unique_artists=unique_artists,
+            unique_albums=unique_albums,
+            unique_tracks=unique_tracks,
+            peak_year=peak_year,
+            avg_plays_per_year=avg_plays_per_year,
+            plays_by_year=plays_by_year,
+            all_years=all_years,
+            artist_contexts=artist_contexts,
+            album_contexts=album_contexts,
+            discoveries_by_year=discoveries_by_year,
+            consistent_artists=consistent_artists,
+            peak_obsessions=peak_obsessions,
+            critics_all_time_stats=critics_all_time_stats,
+            top_aligned_critics=top_aligned_critics,
+            most_acclaimed_albums=most_acclaimed_albums,
+            mb_available=mb_available,
+            genre_breakdown_all=genre_breakdown_all,
+            decade_breakdown=decade_breakdown,
+        )
+        html.write_text(html_content)
+        console.print(f"[green]Generated HTML overview: {html}[/green]")
+
+
+@app.command()
+def review(
+    ctx: typer.Context,
+    html: Optional[Path] = typer.Option(None, "--html", help="Export to HTML file"),
+):
+    """Generate comprehensive year-in-review."""
+    from . import crossref
+    from collections import defaultdict
+    import json
+    from rich.table import Table
+
+    csv = ctx.obj.get("csv") if ctx.obj else None
+    year = ctx.obj.get("year") if ctx.obj else None
+    year = year if year is not None else 2025
 
     df_full = data.load_scrobbles(get_csv_path(csv))
     df = data.filter_by_year(df_full, year)
@@ -998,7 +874,7 @@ def review(
     your_overlap_pct = 0
     critic_overlap_stats = []
 
-    json_path = critics_json or get_critics_path(year)
+    json_path = get_critics_path(year)
     if json_path.exists():
         try:
             critics_data = crossref.load_critics_data(json_path)
@@ -1093,26 +969,60 @@ def review(
             ).first().reset_index()
             new_albums_this_year = first_plays[first_plays["year"] == year]
 
-            new_album_artists = set()
-            for _, row in new_albums_this_year.iterrows():
-                new_album_artists.add(crossref.normalize_for_matching(row["artist"]))
+            # Filter to only albums actually released in the review year (using MusicBrainz)
+            from . import musicbrainz_db
+            import sqlite3 as sqlite3_gems
 
-            # Top artists with new albums not in critics lists
-            for ctx in artist_contexts:
-                norm_name = crossref.normalize_for_matching(ctx["name"])
-                if norm_name not in critics_artists and norm_name in new_album_artists:
-                    # Get the new album(s)
-                    artist_new = new_albums_this_year[
-                        new_albums_this_year["artist"].apply(
-                            lambda x: crossref.normalize_for_matching(x) == norm_name
-                        )
-                    ]
-                    albums = artist_new["album"].tolist()
-                    overlooked_gems.append({
-                        "artist": ctx["name"],
-                        "plays": ctx["plays"],
-                        "albums": albums[:2],  # Top 2 new albums
-                    })
+            db_stats = musicbrainz_db.get_database_stats()
+            if db_stats and db_stats.get("has_full_schema"):
+                conn_mb = sqlite3_gems.connect(musicbrainz_db.MUSICBRAINZ_DB)
+                albums_released_this_year = []
+
+                for _, row in new_albums_this_year.iterrows():
+                    info = musicbrainz_db.lookup_release(row["artist"], row["album"], conn_mb)
+                    if info and info.year == year:
+                        albums_released_this_year.append({
+                            "artist": row["artist"],
+                            "album": row["album"],
+                            "norm_artist": crossref.normalize_for_matching(row["artist"])
+                        })
+
+                conn_mb.close()
+
+                # Build set of artists with actual new releases this year
+                new_album_artists = set(a["norm_artist"] for a in albums_released_this_year)
+
+                # Top artists with new albums not in critics lists
+                for ctx in artist_contexts:
+                    norm_name = crossref.normalize_for_matching(ctx["name"])
+                    if norm_name not in critics_artists and norm_name in new_album_artists:
+                        # Get the albums released this year
+                        artist_albums = [a["album"] for a in albums_released_this_year if a["norm_artist"] == norm_name]
+                        overlooked_gems.append({
+                            "artist": ctx["name"],
+                            "plays": ctx["plays"],
+                            "albums": artist_albums[:2],  # Top 2 new albums
+                        })
+            else:
+                # Fallback: use first-heard albums without release year filtering
+                new_album_artists = set()
+                for _, row in new_albums_this_year.iterrows():
+                    new_album_artists.add(crossref.normalize_for_matching(row["artist"]))
+
+                for ctx in artist_contexts:
+                    norm_name = crossref.normalize_for_matching(ctx["name"])
+                    if norm_name not in critics_artists and norm_name in new_album_artists:
+                        artist_new = new_albums_this_year[
+                            new_albums_this_year["artist"].apply(
+                                lambda x: crossref.normalize_for_matching(x) == norm_name
+                            )
+                        ]
+                        albums = artist_new["album"].tolist()
+                        overlooked_gems.append({
+                            "artist": ctx["name"],
+                            "plays": ctx["plays"],
+                            "albums": albums[:2],
+                        })
 
             overlooked_gems = overlooked_gems[:10]
 
@@ -1266,6 +1176,8 @@ def review(
 
     # ============ CONSOLE OUTPUT ============
     if not html:
+        from datetime import datetime
+
         console.print(f"\n[bold magenta]{'═' * 50}[/bold magenta]")
         console.print(f"[bold magenta]  YOUR {year} IN MUSIC[/bold magenta]")
         console.print(f"[bold magenta]{'═' * 50}[/bold magenta]\n")
@@ -2179,1589 +2091,519 @@ def generate_review_html(
     return html
 
 
-@app.command()
-def spotify_auth(
-    client_id: str = typer.Option(None, "--client-id", help="Spotify Client ID"),
-    client_secret: str = typer.Option(None, "--client-secret", help="Spotify Client Secret"),
-):
-    """Set up Spotify API credentials for playlist creation.
+def generate_overview_html(
+    total_plays: int,
+    first_scrobble,
+    last_scrobble,
+    years_of_data: int,
+    unique_artists: int,
+    unique_albums: int,
+    unique_tracks: int,
+    peak_year: tuple,
+    avg_plays_per_year: float,
+    plays_by_year: dict,
+    all_years: list,
+    artist_contexts: list,
+    album_contexts: list,
+    discoveries_by_year: dict,
+    consistent_artists,
+    peak_obsessions: list,
+    critics_all_time_stats: dict | None,
+    top_aligned_critics: list,
+    most_acclaimed_albums: list,
+    mb_available: bool,
+    genre_breakdown_all: list,
+    decade_breakdown: dict,
+) -> str:
+    """Generate HTML overview content."""
+    from datetime import datetime
 
-    To get credentials:
-    1. Go to https://developer.spotify.com/dashboard
-    2. Create an app
-    3. Add http://localhost:8888/callback to Redirect URIs
-    4. Copy your Client ID and Client Secret
-    """
-    from . import spotify
-
-    if client_id and client_secret:
-        creds = spotify.SpotifyCredentials(
-            client_id=client_id,
-            client_secret=client_secret,
-        )
-        spotify.save_credentials(creds)
-        console.print("[green]Credentials saved![/green]")
-    else:
-        # Check if we have stored credentials
-        creds = spotify.get_credentials()
-        if creds:
-            console.print(f"[green]Credentials found[/green] (Client ID: {creds.client_id[:8]}...)")
-        else:
-            console.print("[yellow]No credentials found.[/yellow]")
-            console.print("\nTo set up Spotify:")
-            console.print("1. Go to https://developer.spotify.com/dashboard")
-            console.print("2. Create an app")
-            console.print("3. Add [cyan]http://localhost:8888/callback[/cyan] to Redirect URIs")
-            console.print("4. Run: [cyan]lastfm spotify-auth --client-id YOUR_ID --client-secret YOUR_SECRET[/cyan]")
-            return
-
-    # Test authentication
-    console.print("\n[dim]Testing authentication...[/dim]")
-    try:
-        sp = spotify.get_spotify_client()
-        if sp:
-            user = sp.current_user()
-            console.print(f"[green]Authenticated as:[/green] {user['display_name']} ({user['id']})")
-        else:
-            console.print("[red]Failed to authenticate[/red]")
-    except Exception as e:
-        console.print(f"[red]Authentication error:[/red] {e}")
-
-
-@app.command()
-def spotify_playlist(
-    csv: Optional[Path] = typer.Option(None, "--csv", "-c", help="Path to Last.fm CSV export"),
-    critics_json: Optional[Path] = typer.Option(None, "--critics", help="Path to critics JSON"),
-    year: int = typer.Option(2025, "--year", "-y", help="Year to analyze"),
-    playlist_type: str = typer.Option(
-        "both",
-        "--type", "-t",
-        help="Playlist type: 'matched' (critics you agreed with), 'missing' (recommendations), or 'both'",
-    ),
-):
-    """Create Spotify playlists from your year-in-review data.
-
-    Creates playlists of:
-    - 'matched': Albums you loved that critics also loved
-    - 'missing': Recommended albums you haven't heard yet
-    - 'both': Both playlists
-    """
-    from . import spotify, crossref
-    import json
-
-    # Check for Spotify credentials
-    sp = spotify.get_spotify_client()
-    if not sp:
-        console.print("[red]Spotify not configured.[/red]")
-        console.print("Run [cyan]lastfm spotify-auth[/cyan] first.")
-        raise typer.Exit(1)
-
-    # Load data (same as review command)
-    df_full = data.load_scrobbles(get_csv_path(csv))
-    df = data.filter_by_year(df_full, year)
-
-    json_path = critics_json or get_critics_path(year)
-    if not json_path.exists():
-        console.print(f"[red]No critics data for {year}. Run 'lastfm crawl --year {year}' first.[/red]")
-        raise typer.Exit(1)
-
-    critics_data = crossref.load_critics_data(json_path)
-    with open(json_path) as f:
-        raw_critics = json.load(f)
-
-    # Build your albums set
-    df_with_albums = df[df["album"] != ""]
-    your_albums = set()
-    for _, row in df_with_albums.iterrows():
-        key = (crossref.normalize_for_matching(row["artist"]),
-               crossref.normalize_for_matching(row["album"]))
-        your_albums.add(key)
-
-    # Get matched albums (your favorites that critics loved)
-    results = crossref.match_with_history(critics_data, df_full, year=year)
-    matched_albums = [
-        {"artist": m.artist, "album": m.album}
-        for m in results["matched"][:20]  # Top 20
-    ]
-
-    # Get recommended albums (weighted by critic overlap)
-    critic_scores = {}
-    for lst in raw_critics:
-        critic = lst["critic"]
-        total = len(lst["albums"])
-        overlap = 0
-        for album in lst["albums"]:
-            if album["artist"] and album["title"]:
-                key = (crossref.normalize_for_matching(album["artist"]),
-                       crossref.normalize_for_matching(album["title"]))
-                if key in your_albums:
-                    overlap += 1
-        critic_scores[critic] = (overlap / total * 100) if total > 0 else 0
-
-    album_critics_map = {}
-    for lst in raw_critics:
-        critic = lst["critic"]
-        for album in lst["albums"]:
-            if album["artist"] and album["title"]:
-                key = (crossref.normalize_for_matching(album["artist"]),
-                       crossref.normalize_for_matching(album["title"]))
-                if key not in your_albums:
-                    if key not in album_critics_map:
-                        album_critics_map[key] = {
-                            "artist": album["artist"],
-                            "album": album["title"],
-                            "critics": [],
-                        }
-                    album_critics_map[key]["critics"].append(critic)
-
-    for key, album_data in album_critics_map.items():
-        album_data["score"] = sum(critic_scores[c] / 100 for c in album_data["critics"])
-
-    missing_albums = sorted(
-        [{"artist": a["artist"], "album": a["album"]} for a in album_critics_map.values()],
-        key=lambda x: -album_critics_map.get(
-            (crossref.normalize_for_matching(x["artist"]),
-             crossref.normalize_for_matching(x["album"])),
-            {"score": 0}
-        ).get("score", 0)
-    )[:20]  # Top 20
-
-    # Create playlists
-    if playlist_type in ("matched", "both") and matched_albums:
-        console.print(f"\n[bold cyan]Creating 'Critics Approved' playlist...[/bold cyan]")
-        console.print(f"[dim]Albums you loved that critics also loved ({year})[/dim]\n")
-
-        url, tracks, found = spotify.create_playlist_from_albums(
-            sp,
-            matched_albums,
-            f"Critics Approved {year}",
-            f"Albums I loved in {year} that critics also loved. Generated from Last.fm + yearendlists.com data.",
+    # Build artist rows with sparklines
+    artist_rows = ""
+    blocks = " ▁▂▃▄▅▆▇█"
+    for i, ctx in enumerate(artist_contexts[:25], 1):
+        max_artist_plays = max(ctx["sparkline_data"]) if ctx["sparkline_data"] else 1
+        sparkline = "".join(
+            blocks[min(8, int(p / max_artist_plays * 8))] if max_artist_plays > 0 else " "
+            for p in ctx["sparkline_data"]
         )
 
-        if url:
-            console.print(f"[green]Created playlist:[/green] {url}")
-            console.print(f"[dim]{tracks} tracks from {found}/{len(matched_albums)} albums found[/dim]")
-        else:
-            console.print("[yellow]Could not find any albums on Spotify[/yellow]")
-
-    if playlist_type in ("missing", "both") and missing_albums:
-        console.print(f"\n[bold cyan]Creating 'Critics Recommend' playlist...[/bold cyan]")
-        console.print(f"[dim]Albums recommended by critics who share your taste ({year})[/dim]\n")
-
-        url, tracks, found = spotify.create_playlist_from_albums(
-            sp,
-            missing_albums,
-            f"Critics Recommend {year}",
-            f"Albums I haven't heard, recommended by critics who share my taste. Generated from Last.fm + yearendlists.com data.",
-        )
-
-        if url:
-            console.print(f"[green]Created playlist:[/green] {url}")
-            console.print(f"[dim]{tracks} tracks from {found}/{len(missing_albums)} albums found[/dim]")
-        else:
-            console.print("[yellow]Could not find any albums on Spotify[/yellow]")
-
-
-@app.command()
-def blind_spots(
-    csv: Optional[Path] = typer.Option(None, "--csv", "-c", help="Path to Last.fm CSV export"),
-    min_critics: int = typer.Option(20, "--min-critics", "-m", help="Minimum critics to be considered a blind spot"),
-    limit: int = typer.Option(20, "--limit", "-n", help="Number of results"),
-):
-    """Find highly-acclaimed albums you've never explored.
-
-    Shows albums that many critics loved but you've never played -
-    your biggest gaps in critical consensus.
-    """
-    from . import crossref
-    import json
-
-    df = data.load_scrobbles(get_csv_path(csv))
-
-    # Build set of all albums you've ever played (normalized)
-    your_albums = set()
-    your_artists = set()
-    df_with_albums = df[df["album"] != ""]
-    for _, row in df_with_albums.iterrows():
-        artist = row["artist"] if pd.notna(row["artist"]) else ""
-        album = row["album"] if pd.notna(row["album"]) else ""
-        if artist and album:
-            your_albums.add((
-                crossref.normalize_for_matching(artist),
-                crossref.normalize_for_matching(album)
-            ))
-            your_artists.add(crossref.normalize_for_matching(artist))
-
-    # Aggregate across all available years
-    all_blind_spots = {}  # (norm_artist, norm_album) -> {artist, album, total_critics, years}
-
-    for year in range(2011, 2026):
-        json_path = get_critics_path(year)
-        if not json_path.exists():
-            continue
-
-        try:
-            with open(json_path) as f:
-                raw_data = json.load(f)
-        except (json.JSONDecodeError, IOError):
-            continue
-
-        # Count critics per album for this year
-        album_critics = {}
-        for lst in raw_data:
-            for album in lst["albums"]:
-                if album["artist"] and album["title"]:
-                    key = (
-                        crossref.normalize_for_matching(album["artist"]),
-                        crossref.normalize_for_matching(album["title"])
-                    )
-                    if key not in album_critics:
-                        album_critics[key] = {
-                            "artist": album["artist"],
-                            "album": album["title"],
-                            "critics": set(),
-                        }
-                    album_critics[key]["critics"].add(lst["critic"])
-
-        # Add to all_blind_spots if you haven't heard it
-        for key, info in album_critics.items():
-            if key not in your_albums:
-                critic_count = len(info["critics"])
-                if key not in all_blind_spots:
-                    all_blind_spots[key] = {
-                        "artist": info["artist"],
-                        "album": info["album"],
-                        "total_critics": 0,
-                        "years": [],
-                        "heard_artist": key[0] in your_artists,
-                    }
-                all_blind_spots[key]["total_critics"] += critic_count
-                all_blind_spots[key]["years"].append((year, critic_count))
-
-    # Filter and sort
-    blind_spots = [
-        v for v in all_blind_spots.values()
-        if v["total_critics"] >= min_critics
-    ]
-    blind_spots.sort(key=lambda x: -x["total_critics"])
-
-    console.print(f"\n[bold magenta]═══ YOUR CRITICAL BLIND SPOTS ═══[/bold magenta]")
-    console.print(f"[dim]Highly-acclaimed albums you've never played ({min_critics}+ critic picks)[/dim]\n")
-
-    if not blind_spots:
-        console.print("[green]No major blind spots found! You're well-aligned with critics.[/green]")
-        return
-
-    table = Table(show_header=True)
-    table.add_column("#", style="dim", width=3)
-    table.add_column("Artist", style="cyan")
-    table.add_column("Album", style="yellow")
-    table.add_column("Critics", justify="right", style="green")
-    table.add_column("Years", style="dim")
-    table.add_column("", style="dim")
-
-    for i, spot in enumerate(blind_spots[:limit], 1):
-        years_str = ", ".join(str(y) for y, _ in sorted(spot["years"], key=lambda x: -x[1])[:3])
-        known = "★" if spot["heard_artist"] else ""
-        table.add_row(
-            str(i),
-            spot["artist"][:25],
-            spot["album"][:30],
-            str(spot["total_critics"]),
-            years_str,
-            known,
-        )
-
-    console.print(table)
-    console.print(f"\n[dim]★ = You've heard other music by this artist[/dim]")
-    console.print(f"[dim]Showing albums with {min_critics}+ total critic selections across all years[/dim]")
-
-
-@app.command()
-def loyalty(
-    csv: Optional[Path] = typer.Option(None, "--csv", "-c", help="Path to Last.fm CSV export"),
-    min_years: int = typer.Option(5, "--min-years", "-m", help="Minimum years to be considered loyal"),
-):
-    """Show your artist loyalty patterns over time.
-
-    Identifies:
-    - Long-term favorites (artists you've played for 5+ years)
-    - Abandoned artists (used to play, stopped completely)
-    - Rediscoveries (returned after a gap)
-    """
-    from . import crossref
-
-    df = data.load_scrobbles(get_csv_path(csv))
-
-    # Filter out NaN artists
-    df = df[df["artist"].notna()]
-
-    # Get year range
-    min_year = df["year"].min()
-    max_year = df["year"].max()
-    current_year = max_year
-
-    # Build artist stats
-    artist_stats = {}
-    for artist in df["artist"].unique():
-        artist_df = df[df["artist"] == artist]
-        years_active = sorted(artist_df["year"].unique())
-        plays_by_year = artist_df.groupby("year").size().to_dict()
-        total_plays = len(artist_df)
-        first_year = min(years_active)
-        last_year = max(years_active)
-        span = last_year - first_year + 1
-
-        artist_stats[artist] = {
-            "years_active": years_active,
-            "plays_by_year": plays_by_year,
-            "total_plays": total_plays,
-            "first_year": first_year,
-            "last_year": last_year,
-            "span": span,
-            "num_years": len(years_active),
-        }
-
-    # Categorize artists
-    long_term = []  # 5+ years of plays
-    abandoned = []  # Played significantly, then stopped for 2+ years
-    rediscovered = []  # Gap of 2+ years, then returned
-
-    for artist, stats in artist_stats.items():
-        years = stats["years_active"]
-        num_years = stats["num_years"]
-        last_year = stats["last_year"]
-        total_plays = stats["total_plays"]
-
-        # Long-term: played in 5+ different years
-        if num_years >= min_years:
-            long_term.append({
-                "artist": artist,
-                "num_years": num_years,
-                "span": stats["span"],
-                "first_year": stats["first_year"],
-                "total_plays": total_plays,
-                "plays_by_year": stats["plays_by_year"],
-            })
-
-        # Check for gaps
-        if len(years) >= 2:
-            gaps = []
-            for i in range(len(years) - 1):
-                gap = years[i + 1] - years[i]
-                if gap >= 3:  # 3+ year gap
-                    gaps.append((years[i], years[i + 1], gap))
-
-            if gaps:
-                last_gap = gaps[-1]
-                # Rediscovered: had a gap but came back
-                if last_year >= current_year - 1:  # Active recently
-                    rediscovered.append({
-                        "artist": artist,
-                        "gap_start": last_gap[0],
-                        "gap_end": last_gap[1],
-                        "gap_years": last_gap[2],
-                        "total_plays": total_plays,
-                        "first_year": stats["first_year"],
-                    })
-                # Abandoned: significant plays but stopped
-                elif total_plays >= 20 and last_year <= current_year - 2:
-                    # Check they had real engagement (not just 1-2 plays)
-                    peak_plays = max(stats["plays_by_year"].values())
-                    if peak_plays >= 10:
-                        abandoned.append({
-                            "artist": artist,
-                            "last_year": last_year,
-                            "peak_year": max(stats["plays_by_year"], key=stats["plays_by_year"].get),
-                            "peak_plays": peak_plays,
-                            "total_plays": total_plays,
-                        })
-
-    # Also find abandoned without gaps (just stopped)
-    for artist, stats in artist_stats.items():
-        if artist in [a["artist"] for a in abandoned]:
-            continue
-        if stats["total_plays"] >= 30 and stats["last_year"] <= current_year - 3:
-            peak_plays = max(stats["plays_by_year"].values())
-            if peak_plays >= 15:
-                abandoned.append({
-                    "artist": artist,
-                    "last_year": stats["last_year"],
-                    "peak_year": max(stats["plays_by_year"], key=stats["plays_by_year"].get),
-                    "peak_plays": peak_plays,
-                    "total_plays": stats["total_plays"],
-                })
-
-    # Sort
-    long_term.sort(key=lambda x: (-x["num_years"], -x["total_plays"]))
-    abandoned.sort(key=lambda x: (-x["peak_plays"], -x["total_plays"]))
-    rediscovered.sort(key=lambda x: (-x["gap_years"], -x["total_plays"]))
-
-    console.print(f"\n[bold magenta]═══ ARTIST LOYALTY REPORT ═══[/bold magenta]")
-    console.print(f"[dim]Your listening history: {min_year}-{max_year}[/dim]\n")
-
-    # Long-term favorites
-    console.print(f"[bold cyan]🎸 LONG-TERM FAVORITES[/bold cyan]")
-    console.print(f"[dim]Artists you've played for {min_years}+ years[/dim]\n")
-
-    if long_term:
-        for i, a in enumerate(long_term[:15], 1):
-            # Mini sparkline of activity
-            years_range = range(a["first_year"], max_year + 1)
-            sparkline = ""
-            for y in years_range:
-                plays = a["plays_by_year"].get(y, 0)
-                if plays == 0:
-                    sparkline += "·"
-                elif plays < 10:
-                    sparkline += "▁"
-                elif plays < 30:
-                    sparkline += "▃"
-                elif plays < 60:
-                    sparkline += "▅"
-                else:
-                    sparkline += "█"
-
-            console.print(f"  {i:2}. [bold]{a['artist']}[/bold]")
-            console.print(f"      {a['num_years']} years · {a['total_plays']:,} plays · Since {a['first_year']}")
-            console.print(f"      [green]{sparkline}[/green] [dim]{a['first_year']}-{max_year}[/dim]")
-    else:
-        console.print("  [dim]No artists with {min_years}+ years of plays yet[/dim]")
-
-    # Rediscoveries
-    console.print(f"\n[bold yellow]🔄 REDISCOVERIES[/bold yellow]")
-    console.print(f"[dim]Artists you returned to after 3+ years away[/dim]\n")
-
-    if rediscovered:
-        for i, a in enumerate(rediscovered[:10], 1):
-            console.print(f"  {i:2}. [bold]{a['artist']}[/bold]")
-            console.print(f"      [dim]Gap: {a['gap_start']}-{a['gap_end']} ({a['gap_years']} years) · First heard {a['first_year']}[/dim]")
-    else:
-        console.print("  [dim]No major rediscoveries found[/dim]")
-
-    # Abandoned
-    console.print(f"\n[bold red]👋 ABANDONED[/bold red]")
-    console.print(f"[dim]Artists you used to love but haven't played in years[/dim]\n")
-
-    if abandoned:
-        for i, a in enumerate(abandoned[:10], 1):
-            years_gone = current_year - a["last_year"]
-            console.print(f"  {i:2}. [bold]{a['artist']}[/bold]")
-            console.print(f"      [dim]Peak: {a['peak_plays']} plays in {a['peak_year']} · Last played {a['last_year']} ({years_gone} years ago)[/dim]")
-    else:
-        console.print("  [dim]No abandoned artists found[/dim]")
-
-
-@app.command()
-def evolution(
-    csv: Optional[Path] = typer.Option(None, "--csv", "-c", help="Path to Last.fm CSV export"),
-):
-    """Show how your taste has evolved over time.
-
-    Detects 'musical eras' - periods where certain artists dominated,
-    and shows when key artists became staples in your listening.
-    """
-    df = data.load_scrobbles(get_csv_path(csv))
-
-    min_year = df["year"].min()
-    max_year = df["year"].max()
-
-    console.print(f"\n[bold magenta]═══ TASTE EVOLUTION ═══[/bold magenta]")
-    console.print(f"[dim]How your listening has changed: {min_year}-{max_year}[/dim]\n")
-
-    # For each year, find the dominant artists
-    console.print("[bold cyan]📅 YEAR BY YEAR: WHO DOMINATED[/bold cyan]\n")
-
-    yearly_data = []
-    for year in range(min_year, max_year + 1):
-        year_df = df[df["year"] == year]
-        if year_df.empty:
-            continue
-
-        total_plays = len(year_df)
-        top_artists = year_df.groupby("artist").size().sort_values(ascending=False)
-
-        # Top 3 artists and their share
-        top3 = []
-        for artist, plays in top_artists.head(3).items():
-            share = plays / total_plays * 100
-            top3.append((artist, plays, share))
-
-        # Concentration: what % do top 10 artists represent?
-        top10_plays = top_artists.head(10).sum()
-        concentration = top10_plays / total_plays * 100
-
-        yearly_data.append({
-            "year": year,
-            "total_plays": total_plays,
-            "top3": top3,
-            "concentration": concentration,
-            "unique_artists": len(top_artists),
-        })
-
-    for yd in yearly_data:
-        year = yd["year"]
-        top3_str = ", ".join(f"{a[0]} ({a[2]:.0f}%)" for a in yd["top3"])
-        bar_width = min(30, yd["total_plays"] // 200)
-        bar = "█" * bar_width
-
-        console.print(f"  [bold]{year}[/bold] [green]{bar}[/green] {yd['total_plays']:,} plays")
-        console.print(f"       [dim]{top3_str}[/dim]")
-
-    # Detect "eras" - periods of similar listening
-    console.print(f"\n[bold cyan]🎭 MUSICAL ERAS[/bold cyan]")
-    console.print("[dim]Detecting shifts in your dominant artists[/dim]\n")
-
-    # Group years into eras based on top artist overlap
-    eras = []
-    current_era = None
-
-    for i, yd in enumerate(yearly_data):
-        top_artists = set(a[0] for a in yd["top3"])
-
-        if current_era is None:
-            current_era = {
-                "start": yd["year"],
-                "end": yd["year"],
-                "artists": top_artists,
-                "defining_artists": list(top_artists),
-            }
-        else:
-            # Check overlap with current era
-            overlap = len(top_artists & current_era["artists"])
-            if overlap >= 1:  # At least 1 shared top artist
-                current_era["end"] = yd["year"]
-                current_era["artists"] |= top_artists
-            else:
-                # New era
-                eras.append(current_era)
-                current_era = {
-                    "start": yd["year"],
-                    "end": yd["year"],
-                    "artists": top_artists,
-                    "defining_artists": list(top_artists),
-                }
-
-    if current_era:
-        eras.append(current_era)
-
-    for i, era in enumerate(eras, 1):
-        span = f"{era['start']}" if era["start"] == era["end"] else f"{era['start']}-{era['end']}"
-        defining = ", ".join(era["defining_artists"][:4])
-        console.print(f"  [bold]Era {i}: {span}[/bold]")
-        console.print(f"  [dim]Defined by: {defining}[/dim]\n")
-
-    # When did key artists enter your life?
-    console.print(f"[bold cyan]🌟 WHEN KEY ARTISTS ENTERED YOUR LIFE[/bold cyan]\n")
-
-    # Find artists with most total plays
-    artist_totals = df.groupby("artist").agg({
-        "timestamp": "min",
-        "track": "count"
-    }).rename(columns={"track": "plays"})
-    artist_totals["first_year"] = artist_totals["timestamp"].dt.year
-    top_artists = artist_totals.nlargest(20, "plays")
-
-    # Group by discovery year
-    by_discovery = {}
-    for artist, row in top_artists.iterrows():
-        year = row["first_year"]
-        if year not in by_discovery:
-            by_discovery[year] = []
-        by_discovery[year].append((artist, row["plays"]))
-
-    for year in sorted(by_discovery.keys()):
-        artists = by_discovery[year]
-        artists_str = ", ".join(f"{a[0]} ({a[1]:,})" for a in sorted(artists, key=lambda x: -x[1])[:3])
-        console.print(f"  [bold]{year}[/bold]: {artists_str}")
-
-
-@app.command()
-def critic_accuracy(
-    csv: Optional[Path] = typer.Option(None, "--csv", "-c", help="Path to Last.fm CSV export"),
-    year: int = typer.Option(2020, "--year", "-y", help="Year of critic recommendations to check"),
-):
-    """Check if you ended up loving albums critics recommended years ago.
-
-    Looks at critic picks from a past year and checks how much you've
-    played them in subsequent years.
-    """
-    from . import crossref
-    import json
-
-    df = data.load_scrobbles(get_csv_path(csv))
-
-    json_path = get_critics_path(year)
-    if not json_path.exists():
-        console.print(f"[red]No critics data for {year}. Run 'lastfm crawl --year {year}' first.[/red]")
-        raise typer.Exit(1)
-
-    with open(json_path) as f:
-        raw_data = json.load(f)
-
-    # Get all critic-recommended albums for that year
-    critic_albums = {}
-    for lst in raw_data:
-        for album in lst["albums"]:
-            if album["artist"] and album["title"]:
-                key = (
-                    crossref.normalize_for_matching(album["artist"]),
-                    crossref.normalize_for_matching(album["title"])
-                )
-                if key not in critic_albums:
-                    critic_albums[key] = {
-                        "artist": album["artist"],
-                        "album": album["title"],
-                        "critics": set(),
-                    }
-                critic_albums[key]["critics"].add(lst["critic"])
-
-    # Check your plays of these albums AFTER the recommendation year
-    df_after = df[df["year"] > year]
-    your_plays = {}
-
-    for _, row in df_after.iterrows():
-        if row["album"]:
-            key = (
-                crossref.normalize_for_matching(row["artist"]),
-                crossref.normalize_for_matching(row["album"])
-            )
-            if key in critic_albums:
-                if key not in your_plays:
-                    your_plays[key] = {"plays": 0, "years": set()}
-                your_plays[key]["plays"] += 1
-                your_plays[key]["years"].add(row["year"])
-
-    # Calculate results
-    total_recommended = len(critic_albums)
-    you_played = len(your_plays)
-    you_loved = len([k for k, v in your_plays.items() if v["plays"] >= 10])
-
-    console.print(f"\n[bold magenta]═══ CRITIC PREDICTION ACCURACY ({year}) ═══[/bold magenta]")
-    console.print(f"[dim]Did you end up loving what critics recommended in {year}?[/dim]\n")
-
-    console.print(f"  Critics recommended: [bold]{total_recommended}[/bold] albums")
-    console.print(f"  You've since played: [bold]{you_played}[/bold] ({100*you_played/total_recommended:.1f}%)")
-    console.print(f"  You've loved (10+ plays): [bold]{you_loved}[/bold] ({100*you_loved/total_recommended:.1f}%)")
-
-    # Top albums you ended up loving
-    if your_plays:
-        console.print(f"\n[bold cyan]Albums from {year} you ended up loving:[/bold cyan]\n")
-
-        loved_albums = [
-            {
-                "artist": critic_albums[k]["artist"],
-                "album": critic_albums[k]["album"],
-                "plays": v["plays"],
-                "critics": len(critic_albums[k]["critics"]),
-                "years_played": sorted(v["years"]),
-            }
-            for k, v in your_plays.items()
-        ]
-        loved_albums.sort(key=lambda x: -x["plays"])
-
-        table = Table(show_header=True, box=None)
-        table.add_column("Album", style="yellow")
-        table.add_column("Artist", style="cyan")
-        table.add_column("Your Plays", justify="right", style="green")
-        table.add_column("Critics", justify="right", style="dim")
-        table.add_column("Played In", style="dim")
-
-        for a in loved_albums[:15]:
-            years_str = ", ".join(str(y) for y in a["years_played"][-3:])
-            table.add_row(
-                a["album"][:25],
-                a["artist"][:20],
-                str(a["plays"]),
-                str(a["critics"]),
-                years_str,
-            )
-
-        console.print(table)
-
-    # What did critics love that you missed?
-    high_consensus = [
-        (k, v) for k, v in critic_albums.items()
-        if len(v["critics"]) >= 20 and k not in your_plays
-    ]
-    high_consensus.sort(key=lambda x: -len(x[1]["critics"]))
-
-    if high_consensus:
-        console.print(f"\n[bold yellow]High-consensus picks you still haven't tried:[/bold yellow]\n")
-        for key, album in high_consensus[:7]:
-            console.print(f"  {album['artist']} — {album['album']} ({len(album['critics'])} critics)")
-
-
-@app.command()
-def critic_tracker(
-    csv: Optional[Path] = typer.Option(None, "--csv", "-c", help="Path to Last.fm CSV export"),
-    reference_year: int = typer.Option(2023, "--ref-year", "-r", help="Year to find your aligned critics"),
-    target_year: int = typer.Option(2025, "--target-year", "-t", help="Year to get their new picks"),
-    min_overlap: int = typer.Option(3, "--min-overlap", "-m", help="Minimum albums overlap to consider a critic aligned"),
-):
-    """Find critics who predicted your past favorites and see what they pick now.
-
-    Uses a reference year to find critics whose picks matched your taste,
-    then shows what those same critics are recommending for the target year.
-    """
-    from . import crossref
-    import json
-
-    df = data.load_scrobbles(get_csv_path(csv))
-
-    # Load both years
-    ref_path = get_critics_path(reference_year)
-    target_path = get_critics_path(target_year)
-
-    if not ref_path.exists():
-        console.print(f"[red]No critics data for {reference_year}. Run 'lastfm crawl --year {reference_year}' first.[/red]")
-        raise typer.Exit(1)
-    if not target_path.exists():
-        console.print(f"[red]No critics data for {target_year}. Run 'lastfm crawl --year {target_year}' first.[/red]")
-        raise typer.Exit(1)
-
-    with open(ref_path) as f:
-        ref_data = json.load(f)
-    with open(target_path) as f:
-        target_data = json.load(f)
-
-    # Build your albums set (all time, for checking what you've heard)
-    your_albums = set()
-    df_with_albums = df[df["album"] != ""]
-    for _, row in df_with_albums.iterrows():
-        artist = row["artist"] if pd.notna(row["artist"]) else ""
-        album = row["album"] if pd.notna(row["album"]) else ""
-        if artist and album:
-            your_albums.add((
-                crossref.normalize_for_matching(artist),
-                crossref.normalize_for_matching(album)
-            ))
-
-    # Find critics with overlap in reference year
-    critic_overlap = {}
-    for lst in ref_data:
-        critic = lst["critic"]
-        overlap = 0
-        matched_albums = []
-        for album in lst["albums"]:
-            if album["artist"] and album["title"]:
-                key = (
-                    crossref.normalize_for_matching(album["artist"]),
-                    crossref.normalize_for_matching(album["title"])
-                )
-                if key in your_albums:
-                    overlap += 1
-                    matched_albums.append(f"{album['artist']} — {album['title']}")
-
-        if overlap >= min_overlap:
-            critic_overlap[critic] = {
-                "overlap": overlap,
-                "total": len(lst["albums"]),
-                "matched": matched_albums,
-            }
-
-    if not critic_overlap:
-        console.print(f"[yellow]No critics found with {min_overlap}+ album overlap in {reference_year}[/yellow]")
-        console.print(f"[dim]Try lowering --min-overlap or using a different reference year[/dim]")
-        raise typer.Exit(1)
-
-    # Get target year picks from these aligned critics
-    aligned_critics = set(critic_overlap.keys())
-    target_picks = {}  # album_key -> {album info, critics who picked it}
-
-    for lst in target_data:
-        critic = lst["critic"]
-        if critic in aligned_critics:
-            for album in lst["albums"]:
-                if album["artist"] and album["title"]:
-                    key = (
-                        crossref.normalize_for_matching(album["artist"]),
-                        crossref.normalize_for_matching(album["title"])
-                    )
-                    if key not in target_picks:
-                        target_picks[key] = {
-                            "artist": album["artist"],
-                            "album": album["title"],
-                            "critics": [],
-                            "you_heard": key in your_albums,
-                        }
-                    target_picks[key]["critics"].append({
-                        "name": critic,
-                        "overlap": critic_overlap[critic]["overlap"],
-                    })
-
-    # Score picks by sum of critic overlap scores
-    for key, pick in target_picks.items():
-        pick["score"] = sum(c["overlap"] for c in pick["critics"])
-        pick["critic_count"] = len(pick["critics"])
-
-    # Sort by score
-    sorted_picks = sorted(target_picks.values(), key=lambda x: -x["score"])
-
-    console.print(f"\n[bold magenta]═══ CRITIC TRACKER ═══[/bold magenta]")
-    console.print(f"[dim]Critics who matched your taste in {reference_year} → What they pick for {target_year}[/dim]\n")
-
-    console.print(f"[bold cyan]Your Aligned Critics ({reference_year}):[/bold cyan]")
-    console.print(f"[dim]Critics with {min_overlap}+ albums you've also heard[/dim]\n")
-
-    for critic, info in sorted(critic_overlap.items(), key=lambda x: -x[1]["overlap"])[:10]:
-        console.print(f"  [bold]{critic}[/bold]: {info['overlap']}/{info['total']} overlap")
-
-    # What do they recommend for target year that you haven't heard?
-    unheard = [p for p in sorted_picks if not p["you_heard"]]
-    heard = [p for p in sorted_picks if p["you_heard"]]
-
-    console.print(f"\n[bold cyan]Their {target_year} Picks You Haven't Heard:[/bold cyan]\n")
-
-    if unheard:
-        table = Table(show_header=True, box=None)
-        table.add_column("Album", style="yellow")
-        table.add_column("Artist", style="cyan")
-        table.add_column("Score", justify="right", style="magenta")
-        table.add_column("Aligned Critics", justify="right", style="green")
-
-        for p in unheard[:15]:
-            table.add_row(
-                p["album"][:28],
-                p["artist"][:22],
-                str(p["score"]),
-                str(p["critic_count"]),
-            )
-
-        console.print(table)
-    else:
-        console.print("  [green]You've heard everything they recommend![/green]")
-
-    if heard:
-        console.print(f"\n[bold green]Their {target_year} Picks You Already Know:[/bold green]")
-        console.print(f"[dim]Validation - you and these critics agree![/dim]\n")
-
-        for p in heard[:5]:
-            console.print(f"  {p['artist']} — {p['album']} ({p['critic_count']} aligned critics)")
-
-
-@app.command()
-def download_musicbrainz(
-    force: bool = typer.Option(False, "--force", "-f", help="Force re-download even if cached"),
-):
-    """Download MusicBrainz database for rich music metadata lookups.
-
-    Downloads the full MusicBrainz release dump (~2-3GB compressed) and builds
-    a local SQLite database with release years, genres, labels, countries, and more.
-
-    The dump file is cached locally, so re-running only re-processes (no re-download).
-    Use --force to bypass the cache and re-download.
-
-    The database is stored at ~/.cache/lastfm-analysis/musicbrainz_releases.db
-    """
-    from . import musicbrainz_db
-
-    stats = musicbrainz_db.get_database_stats()
-    if stats:
-        console.print(f"[yellow]Existing database found:[/yellow]")
-        console.print(f"  Releases: {stats['releases']:,}")
-        console.print(f"  Years: {stats['year_range'][0]}-{stats['year_range'][1]}")
-        if stats.get('has_full_schema'):
-            console.print(f"  Genres: {stats['unique_genres']:,}")
-            console.print(f"  Labels: {stats['unique_labels']:,}")
-        else:
-            console.print(f"  [dim]Old schema - re-download to get genres, labels, countries[/dim]")
-        console.print(f"  Size: {stats['size_mb']:.1f} MB")
-        console.print()
-
-    console.print("[bold]This will download ~2-3GB (first time) and take 5-15 minutes to process.[/bold]")
-    console.print()
-
-    count = musicbrainz_db.download_and_build_database(force_download=force)
-
-    # Show final stats
-    stats = musicbrainz_db.get_database_stats()
-    console.print(f"\n[bold green]Done! Database ready:[/bold green]")
-    console.print(f"  Releases: {stats['releases']:,}")
-    console.print(f"  Years: {stats['year_range'][0]}-{stats['year_range'][1]}")
-    console.print(f"  Genres: {stats['unique_genres']:,}")
-    console.print(f"  Labels: {stats['unique_labels']:,}")
-    if stats['release_types']:
-        console.print(f"  Types: {', '.join(f'{k} ({v:,})' for k, v in list(stats['release_types'].items())[:5])}")
-    console.print(f"  Size: {stats['size_mb']:.1f} MB")
-
-
-@app.command()
-def enrich_releases(
-    csv: Optional[Path] = typer.Option(None, "--csv", "-c", help="Path to Last.fm CSV export"),
-    limit: int = typer.Option(500, "--limit", "-n", help="Max albums to look up via API"),
-    year: Optional[int] = typer.Option(None, "--year", "-y", help="Only enrich albums from this year"),
-):
-    """Fetch release years for albums.
-
-    Uses local MusicBrainz database if available (instant), otherwise falls
-    back to API (rate-limited to 1 req/sec).
-
-    Run 'download-musicbrainz' first for best performance.
-    """
-    from . import release_years
-    from . import musicbrainz_db
-    import sqlite3
-
-    df = data.load_scrobbles(get_csv_path(csv))
-
-    if year:
-        df = data.filter_by_year(df, year)
-
-    # Get unique albums with MBIDs
-    df_albums = df[df["album"] != ""].copy()
-    df_albums = df_albums[df_albums["artist"].notna()]
-
-    unique_albums = df_albums.groupby(["artist", "album"]).agg({
-        "album_mbid": "first"
-    }).reset_index()
-
-    console.print(f"[bold]Found {len(unique_albums)} unique albums in your library[/bold]")
-
-    # Load existing cache
-    cache = release_years.load_cache()
-    initial_cache_size = len(cache)
-
-    # Check for local MusicBrainz database
-    db_stats = musicbrainz_db.get_database_stats()
-    has_local_db = db_stats is not None
-
-    if has_local_db:
-        console.print(f"[green]Using local MusicBrainz database ({db_stats['releases']:,} releases)[/green]")
-    else:
-        console.print("[yellow]No local database. Run 'download-musicbrainz' for faster lookups.[/yellow]")
-
-    # First pass: check cache and local DB
-    cached_count = 0
-    local_db_found = 0
-    to_lookup = []
-
-    conn = None
-    if has_local_db:
-        conn = sqlite3.connect(musicbrainz_db.MUSICBRAINZ_DB)
-
-    for _, row in unique_albums.iterrows():
-        artist = row["artist"]
-        album = row["album"]
-        mbid = row["album_mbid"] if pd.notna(row["album_mbid"]) else ""
-
-        cache_key = f"{artist.lower()}|||{album.lower()}"
-
-        # Check cache first
-        if mbid in cache or cache_key in cache:
-            cached_count += 1
-            continue
-
-        # Check local DB
-        if conn:
-            year_found = musicbrainz_db.lookup_release_year(artist, album, conn)
-            if year_found:
-                cache[cache_key] = year_found
-                local_db_found += 1
-                continue
-
-        to_lookup.append((artist, album, mbid))
-
-    if conn:
-        conn.close()
-
-    # Save any new entries found from local DB
-    if local_db_found > 0:
-        release_years.save_cache(cache)
-        console.print(f"[green]{local_db_found}[/green] found in local database")
-
-    console.print(f"[green]{cached_count}[/green] already cached, [yellow]{len(to_lookup)}[/yellow] need API lookup")
-
-    if not to_lookup:
-        console.print("[green]All albums already enriched![/green]")
-        return
-
-    # Limit API lookups
-    to_lookup = to_lookup[:limit]
-    console.print(f"\n[dim]Looking up {len(to_lookup)} albums via API (limit: {limit})...[/dim]")
-    console.print("[dim]This will take ~{} minutes due to rate limiting[/dim]\n".format(len(to_lookup) // 60 + 1))
-
-    results = release_years.enrich_albums_with_release_years(to_lookup, delay=1.1)
-
-    console.print(f"\n[green]Found release years for {len(results)} albums[/green]")
-    console.print(f"[dim]Cache saved to {release_years.RELEASE_CACHE_FILE}[/dim]")
-
-
-@app.command()
-def catalog(
-    csv: Optional[Path] = typer.Option(None, "--csv", "-c", help="Path to Last.fm CSV export"),
-    year: Optional[int] = typer.Option(None, "--year", "-y", help="Analyze specific year"),
-):
-    """Analyze your new vs catalog listening patterns.
-
-    Shows:
-    - What % of your listening is new releases vs older catalog
-    - Decade breakdown (are you a 70s person? 90s? 2020s?)
-    - Average discovery lag (how long after release do you find albums?)
-
-    Run 'enrich-releases' first to populate release year data.
-    """
-    from . import release_years
-    from collections import defaultdict
-
-    df = data.load_scrobbles(get_csv_path(csv))
-
-    if year:
-        df = data.filter_by_year(df, year)
-        title = f"CATALOG ANALYSIS ({year})"
-    else:
-        title = "CATALOG ANALYSIS (All Time)"
-
-    # Load release year cache
-    cache = release_years.load_cache()
-
-    if not cache:
-        console.print("[yellow]No release year data found.[/yellow]")
-        console.print("Run [cyan]lastfm enrich-releases[/cyan] first to fetch release years.")
-        raise typer.Exit(1)
-
-    # Match scrobbles with release years
-    df_albums = df[df["album"] != ""].copy()
-    df_albums = df_albums[df_albums["artist"].notna()]
-
-    matched = 0
-    unmatched = 0
-    scrobbles_with_years = []
-
-    # Stats by year
-    by_play_year = defaultdict(lambda: {"total": 0, "new": 0, "by_decade": defaultdict(int)})
-
-    for _, row in df_albums.iterrows():
-        artist = str(row["artist"])
-        album = str(row["album"])
-        mbid = row["album_mbid"] if pd.notna(row["album_mbid"]) else ""
-        play_year = row["year"]
-
-        # Look up release year
-        release_year = None
-        if mbid and mbid in cache:
-            release_year = cache[mbid]
-        else:
-            cache_key = f"{artist.lower()}|||{album.lower()}"
-            if cache_key in cache:
-                release_year = cache[cache_key]
-
-        if release_year:
-            matched += 1
-            scrobbles_with_years.append({
-                "artist": artist,
-                "album": album,
-                "play_year": play_year,
-                "release_year": release_year,
-            })
-
-            # Update stats
-            by_play_year[play_year]["total"] += 1
-            if release_year == play_year:
-                by_play_year[play_year]["new"] += 1
-
-            decade = (release_year // 10) * 10
-            by_play_year[play_year]["by_decade"][decade] += 1
-        else:
-            unmatched += 1
-
-    total = matched + unmatched
-    console.print(f"\n[bold magenta]═══ {title} ═══[/bold magenta]")
-    console.print(f"[dim]Matched {matched:,} of {total:,} plays ({100*matched/total:.0f}%) with release years[/dim]\n")
-
-    if matched == 0:
-        console.print("[yellow]No release year data matched. Run 'enrich-releases' with more albums.[/yellow]")
-        return
-
-    # Overall decade breakdown
-    decade_totals = defaultdict(int)
-    for s in scrobbles_with_years:
-        decade = (s["release_year"] // 10) * 10
-        decade_totals[decade] += 1
-
-    console.print("[bold cyan]🎵 DECADE BREAKDOWN[/bold cyan]")
-    console.print("[dim]What era is your music from?[/dim]\n")
-
-    max_decade = max(decade_totals.values()) if decade_totals else 1
-    for decade in sorted(decade_totals.keys()):
-        count = decade_totals[decade]
-        pct = count / matched * 100
-        bar_width = int((count / max_decade) * 25)
-        bar = "█" * bar_width
-        console.print(f"  {decade}s [green]{bar}[/green] {pct:.1f}% ({count:,})")
-
-    # New release percentage by year
-    console.print(f"\n[bold cyan]📅 NEW RELEASE % BY YEAR[/bold cyan]")
-    console.print("[dim]What % of plays were albums released that same year?[/dim]\n")
-
-    for play_year in sorted(by_play_year.keys())[-10:]:  # Last 10 years
-        stats = by_play_year[play_year]
-        if stats["total"] > 0:
-            new_pct = stats["new"] / stats["total"] * 100
-            bar_width = int(new_pct / 4)  # Scale to ~25 chars for 100%
-            bar = "█" * bar_width
-            console.print(f"  {play_year} [green]{bar}[/green] {new_pct:.1f}% new releases")
-
-    # Discovery lag
-    console.print(f"\n[bold cyan]⏱️  DISCOVERY LAG[/bold cyan]")
-    console.print("[dim]How long after release do you typically discover albums?[/dim]\n")
-
-    # Calculate per-album discovery lag
-    album_first_play = {}
-    for s in scrobbles_with_years:
-        key = (s["artist"], s["album"])
-        if key not in album_first_play:
-            album_first_play[key] = {
-                "play_year": s["play_year"],
-                "release_year": s["release_year"],
-            }
-
-    lag_buckets = defaultdict(int)
-    for info in album_first_play.values():
-        lag = info["play_year"] - info["release_year"]
-        if lag < 0:
-            lag_buckets["Pre-release/error"] += 1
-        elif lag == 0:
-            lag_buckets["Same year"] += 1
-        elif lag == 1:
-            lag_buckets["1 year later"] += 1
-        elif lag <= 3:
-            lag_buckets["2-3 years"] += 1
-        elif lag <= 5:
-            lag_buckets["4-5 years"] += 1
-        elif lag <= 10:
-            lag_buckets["6-10 years"] += 1
-        else:
-            lag_buckets["10+ years"] += 1
-
-    total_albums = len(album_first_play)
-    order = ["Same year", "1 year later", "2-3 years", "4-5 years", "6-10 years", "10+ years"]
-    for bucket in order:
-        if bucket in lag_buckets:
-            count = lag_buckets[bucket]
-            pct = count / total_albums * 100
-            console.print(f"  {bucket}: {count:,} albums ({pct:.1f}%)")
-
-    # Average lag
-    lags = [info["play_year"] - info["release_year"]
-            for info in album_first_play.values()
-            if info["play_year"] >= info["release_year"]]
-    if lags:
-        avg_lag = sum(lags) / len(lags)
-        console.print(f"\n  [bold]Average discovery lag: {avg_lag:.1f} years[/bold]")
-
-    # Vintage vs Modern summary
-    console.print(f"\n[bold cyan]📊 VINTAGE VS MODERN[/bold cyan]\n")
-
-    current_decade = (max(s["play_year"] for s in scrobbles_with_years) // 10) * 10
-    modern = sum(1 for s in scrobbles_with_years if s["release_year"] >= current_decade - 10)
-    vintage = matched - modern
-
-    modern_pct = modern / matched * 100
-    vintage_pct = vintage / matched * 100
-
-    console.print(f"  Modern (last 20 years): [green]{modern_pct:.1f}%[/green]")
-    console.print(f"  Vintage (20+ years old): [yellow]{vintage_pct:.1f}%[/yellow]")
-
-
-@app.command()
-def genres(
-    csv: Optional[Path] = typer.Option(None, "--csv", "-c", help="Path to Last.fm CSV export"),
-    year: Optional[int] = typer.Option(None, "--year", "-y", help="Analyze specific year"),
-    limit: int = typer.Option(20, "--limit", "-n", help="Number of genres to show"),
-):
-    """Analyze your listening by genre.
-
-    Shows which genres dominate your listening, how they've evolved over time,
-    and identifies genre blind spots.
-
-    Requires the MusicBrainz database - run 'download-musicbrainz' first.
-    """
-    from . import musicbrainz_db
-    from collections import defaultdict
-    import sqlite3
-
-    # Check for local database
-    db_stats = musicbrainz_db.get_database_stats()
-    if not db_stats:
-        console.print("[yellow]No MusicBrainz database found.[/yellow]")
-        console.print("Run [cyan]lastfm download-musicbrainz[/cyan] first.")
-        raise typer.Exit(1)
-
-    df = data.load_scrobbles(get_csv_path(csv))
-
-    if year:
-        df = data.filter_by_year(df, year)
-        title = f"GENRE ANALYSIS ({year})"
-    else:
-        title = "GENRE ANALYSIS (All Time)"
-
-    # Get unique albums
-    df_albums = df[df["album"] != ""].copy()
-    df_albums = df_albums[df_albums["artist"].notna()]
-
-    # Count plays per album
-    album_plays = df_albums.groupby(["artist", "album"]).size().reset_index(name="plays")
-
-    # Look up genres for each album
-    conn = sqlite3.connect(musicbrainz_db.MUSICBRAINZ_DB)
-    genre_plays = defaultdict(int)  # genre -> total plays
-    genre_albums = defaultdict(set)  # genre -> set of (artist, album)
-    matched = 0
-    total_plays_matched = 0
-
-    for _, row in album_plays.iterrows():
-        artist = row["artist"]
-        album = row["album"]
-        plays = row["plays"]
-
-        info = musicbrainz_db.lookup_release(artist, album, conn)
-        if info and info.genres:
-            matched += 1
-            total_plays_matched += plays
-            for genre in info.genres:
-                genre_plays[genre] += plays
-                genre_albums[genre].add((artist, album))
-
-    conn.close()
-
-    console.print(f"\n[bold magenta]═══ {title} ═══[/bold magenta]")
-    console.print(f"[dim]Matched {matched:,} of {len(album_plays):,} albums with genre data[/dim]\n")
-
-    if not genre_plays:
-        console.print("[yellow]No genre data found. Try running 'download-musicbrainz' first.[/yellow]")
-        return
-
-    # Sort genres by play count
-    sorted_genres = sorted(genre_plays.items(), key=lambda x: x[1], reverse=True)
-    top_genres = sorted_genres[:limit]
-
-    console.print("[bold cyan]🎸 TOP GENRES BY PLAYS[/bold cyan]\n")
-
-    max_plays = top_genres[0][1] if top_genres else 1
-    for genre, plays in top_genres:
-        pct = plays / total_plays_matched * 100
-        bar_width = int((plays / max_plays) * 25)
-        bar = "█" * bar_width
-        album_count = len(genre_albums[genre])
-        console.print(f"  {genre:<20} [green]{bar}[/green] {pct:>5.1f}% ({plays:,} plays, {album_count} albums)")
-
-    # If analyzing all time, show genre evolution by year
-    if not year:
-        console.print(f"\n[bold cyan]📈 GENRE EVOLUTION[/bold cyan]")
-        console.print("[dim]How have your top genres changed over time?[/dim]\n")
-
-        # Get plays by year for top 5 genres
-        top_5_genres = [g for g, _ in sorted_genres[:5]]
-
-        # Re-scan with year info
-        df_albums_with_year = df_albums.copy()
-        genre_by_year = defaultdict(lambda: defaultdict(int))
-
-        conn = sqlite3.connect(musicbrainz_db.MUSICBRAINZ_DB)
-        for _, row in df_albums_with_year.iterrows():
-            artist = row["artist"]
-            album = row["album"]
-            play_year = row["year"]
-
-            info = musicbrainz_db.lookup_release(artist, album, conn)
-            if info and info.genres:
-                for genre in info.genres:
-                    if genre in top_5_genres:
-                        genre_by_year[play_year][genre] += 1
-        conn.close()
-
-        # Show sparkline-style evolution for each top genre
-        years = sorted(genre_by_year.keys())[-10:]  # Last 10 years
-        for genre in top_5_genres:
-            values = [genre_by_year[y].get(genre, 0) for y in years]
-            max_val = max(values) if values else 1
-            # Create sparkline
-            blocks = " ▁▂▃▄▅▆▇█"
-            sparkline = ""
-            for v in values:
-                idx = int((v / max_val) * 8) if max_val > 0 else 0
-                sparkline += blocks[idx]
-            console.print(f"  {genre:<20} {sparkline} ({years[0]}-{years[-1]})")
-
-
-@app.command()
-def labels(
-    csv: Optional[Path] = typer.Option(None, "--csv", "-c", help="Path to Last.fm CSV export"),
-    year: Optional[int] = typer.Option(None, "--year", "-y", help="Analyze specific year"),
-    limit: int = typer.Option(20, "--limit", "-n", help="Number of labels to show"),
-):
-    """Analyze your listening by record label.
-
-    Discover which labels' releases dominate your listening.
-
-    Requires the MusicBrainz database - run 'download-musicbrainz' first.
-    """
-    from . import musicbrainz_db
-    from collections import defaultdict
-    import sqlite3
-
-    # Check for local database
-    db_stats = musicbrainz_db.get_database_stats()
-    if not db_stats:
-        console.print("[yellow]No MusicBrainz database found.[/yellow]")
-        console.print("Run [cyan]lastfm download-musicbrainz[/cyan] first.")
-        raise typer.Exit(1)
-
-    df = data.load_scrobbles(get_csv_path(csv))
-
-    if year:
-        df = data.filter_by_year(df, year)
-        title = f"LABEL ANALYSIS ({year})"
-    else:
-        title = "LABEL ANALYSIS (All Time)"
-
-    # Get unique albums
-    df_albums = df[df["album"] != ""].copy()
-    df_albums = df_albums[df_albums["artist"].notna()]
-
-    # Count plays per album
-    album_plays = df_albums.groupby(["artist", "album"]).size().reset_index(name="plays")
-
-    # Look up labels for each album
-    conn = sqlite3.connect(musicbrainz_db.MUSICBRAINZ_DB)
-    label_plays = defaultdict(int)  # label -> total plays
-    label_albums = defaultdict(set)  # label -> set of (artist, album)
-    label_artists = defaultdict(set)  # label -> set of artists
-    matched = 0
-    total_plays_matched = 0
-
-    for _, row in album_plays.iterrows():
-        artist = row["artist"]
-        album = row["album"]
-        plays = row["plays"]
-
-        info = musicbrainz_db.lookup_release(artist, album, conn)
-        if info and info.labels:
-            matched += 1
-            total_plays_matched += plays
-            for label in info.labels:
-                label_plays[label] += plays
-                label_albums[label].add((artist, album))
-                label_artists[label].add(artist)
-
-    conn.close()
-
-    console.print(f"\n[bold magenta]═══ {title} ═══[/bold magenta]")
-    console.print(f"[dim]Matched {matched:,} of {len(album_plays):,} albums with label data[/dim]\n")
-
-    if not label_plays:
-        console.print("[yellow]No label data found. Try running 'download-musicbrainz' first.[/yellow]")
-        return
-
-    # Sort labels by play count
-    sorted_labels = sorted(label_plays.items(), key=lambda x: x[1], reverse=True)
-    top_labels = sorted_labels[:limit]
-
-    console.print("[bold cyan]🏷️  TOP LABELS BY PLAYS[/bold cyan]\n")
-
-    max_plays = top_labels[0][1] if top_labels else 1
-    for label, plays in top_labels:
-        pct = plays / total_plays_matched * 100
-        bar_width = int((plays / max_plays) * 25)
-        bar = "█" * bar_width
-        album_count = len(label_albums[label])
-        artist_count = len(label_artists[label])
-        console.print(f"  {label[:25]:<25} [green]{bar}[/green] {pct:>5.1f}% ({artist_count} artists, {album_count} albums)")
-
-    # Show notable artists per top label
-    console.print(f"\n[bold cyan]🎤 ARTISTS BY LABEL[/bold cyan]\n")
-
-    for label, _ in top_labels[:10]:
-        artists = sorted(label_artists[label])[:5]
-        artists_str = ", ".join(artists)
-        if len(label_artists[label]) > 5:
-            artists_str += f" (+{len(label_artists[label]) - 5} more)"
-        console.print(f"  [bold]{label}[/bold]")
-        console.print(f"    {artists_str}")
-
-
-@app.command()
-def countries(
-    csv: Optional[Path] = typer.Option(None, "--csv", "-c", help="Path to Last.fm CSV export"),
-    year: Optional[int] = typer.Option(None, "--year", "-y", help="Analyze specific year"),
-    limit: int = typer.Option(15, "--limit", "-n", help="Number of countries to show"),
-):
-    """Analyze your listening by release country.
-
-    See which countries' releases dominate your listening.
-
-    Requires the MusicBrainz database - run 'download-musicbrainz' first.
-    """
-    from . import musicbrainz_db
-    from collections import defaultdict
-    import sqlite3
-
-    # Country code to name mapping (common ones)
-    COUNTRY_NAMES = {
-        "US": "United States", "GB": "United Kingdom", "JP": "Japan",
-        "DE": "Germany", "FR": "France", "CA": "Canada", "AU": "Australia",
-        "SE": "Sweden", "NL": "Netherlands", "IT": "Italy", "ES": "Spain",
-        "NO": "Norway", "DK": "Denmark", "FI": "Finland", "BE": "Belgium",
-        "AT": "Austria", "CH": "Switzerland", "IE": "Ireland", "NZ": "New Zealand",
-        "BR": "Brazil", "MX": "Mexico", "KR": "South Korea", "XW": "Worldwide",
-        "XE": "Europe", "RU": "Russia", "PL": "Poland", "PT": "Portugal",
-    }
-
-    # Check for local database
-    db_stats = musicbrainz_db.get_database_stats()
-    if not db_stats:
-        console.print("[yellow]No MusicBrainz database found.[/yellow]")
-        console.print("Run [cyan]lastfm download-musicbrainz[/cyan] first.")
-        raise typer.Exit(1)
-
-    df = data.load_scrobbles(get_csv_path(csv))
-
-    if year:
-        df = data.filter_by_year(df, year)
-        title = f"COUNTRY ANALYSIS ({year})"
-    else:
-        title = "COUNTRY ANALYSIS (All Time)"
-
-    # Get unique albums
-    df_albums = df[df["album"] != ""].copy()
-    df_albums = df_albums[df_albums["artist"].notna()]
-
-    # Count plays per album
-    album_plays = df_albums.groupby(["artist", "album"]).size().reset_index(name="plays")
-
-    # Look up countries for each album
-    conn = sqlite3.connect(musicbrainz_db.MUSICBRAINZ_DB)
-    country_plays = defaultdict(int)
-    country_albums = defaultdict(set)
-    matched = 0
-    total_plays_matched = 0
-
-    for _, row in album_plays.iterrows():
-        artist = row["artist"]
-        album = row["album"]
-        plays = row["plays"]
-
-        info = musicbrainz_db.lookup_release(artist, album, conn)
-        if info and info.country:
-            matched += 1
-            total_plays_matched += plays
-            country_plays[info.country] += plays
-            country_albums[info.country].add((artist, album))
-
-    conn.close()
-
-    console.print(f"\n[bold magenta]═══ {title} ═══[/bold magenta]")
-    console.print(f"[dim]Matched {matched:,} of {len(album_plays):,} albums with country data[/dim]\n")
-
-    if not country_plays:
-        console.print("[yellow]No country data found. Try running 'download-musicbrainz' first.[/yellow]")
-        return
-
-    # Sort countries by play count
-    sorted_countries = sorted(country_plays.items(), key=lambda x: x[1], reverse=True)
-    top_countries = sorted_countries[:limit]
-
-    console.print("[bold cyan]🌍 TOP RELEASE COUNTRIES[/bold cyan]\n")
-
-    max_plays = top_countries[0][1] if top_countries else 1
-    for country_code, plays in top_countries:
-        pct = plays / total_plays_matched * 100
-        bar_width = int((plays / max_plays) * 25)
-        bar = "█" * bar_width
-        album_count = len(country_albums[country_code])
-        country_name = COUNTRY_NAMES.get(country_code, country_code)
-        console.print(f"  {country_name:<20} [green]{bar}[/green] {pct:>5.1f}% ({plays:,} plays, {album_count} albums)")
-
-
-@app.command()
-def release_types(
-    csv: Optional[Path] = typer.Option(None, "--csv", "-c", help="Path to Last.fm CSV export"),
-    year: Optional[int] = typer.Option(None, "--year", "-y", help="Analyze specific year"),
-):
-    """Analyze your listening by release type.
-
-    Shows breakdown of albums vs EPs vs singles vs compilations, etc.
-
-    Requires the MusicBrainz database - run 'download-musicbrainz' first.
-    """
-    from . import musicbrainz_db
-    from collections import defaultdict
-    import sqlite3
-
-    # Check for local database
-    db_stats = musicbrainz_db.get_database_stats()
-    if not db_stats:
-        console.print("[yellow]No MusicBrainz database found.[/yellow]")
-        console.print("Run [cyan]lastfm download-musicbrainz[/cyan] first.")
-        raise typer.Exit(1)
-
-    df = data.load_scrobbles(get_csv_path(csv))
-
-    if year:
-        df = data.filter_by_year(df, year)
-        title = f"RELEASE TYPE ANALYSIS ({year})"
-    else:
-        title = "RELEASE TYPE ANALYSIS (All Time)"
-
-    # Get unique albums
-    df_albums = df[df["album"] != ""].copy()
-    df_albums = df_albums[df_albums["artist"].notna()]
-
-    # Count plays per album
-    album_plays = df_albums.groupby(["artist", "album"]).size().reset_index(name="plays")
-
-    # Look up release type for each album
-    conn = sqlite3.connect(musicbrainz_db.MUSICBRAINZ_DB)
-    type_plays = defaultdict(int)
-    type_albums = defaultdict(set)
-    matched = 0
-    total_plays_matched = 0
-
-    for _, row in album_plays.iterrows():
-        artist = row["artist"]
-        album = row["album"]
-        plays = row["plays"]
-
-        info = musicbrainz_db.lookup_release(artist, album, conn)
-        if info:
-            matched += 1
-            total_plays_matched += plays
-            release_type = info.release_type or "unknown"
-            type_plays[release_type] += plays
-            type_albums[release_type].add((artist, album))
-
-    conn.close()
-
-    console.print(f"\n[bold magenta]═══ {title} ═══[/bold magenta]")
-    console.print(f"[dim]Matched {matched:,} of {len(album_plays):,} releases[/dim]\n")
-
-    if not type_plays:
-        console.print("[yellow]No release type data found.[/yellow]")
-        return
-
-    # Sort by play count
-    sorted_types = sorted(type_plays.items(), key=lambda x: x[1], reverse=True)
-
-    console.print("[bold cyan]💿 RELEASE TYPES[/bold cyan]\n")
-
-    max_plays = sorted_types[0][1] if sorted_types else 1
-    for release_type, plays in sorted_types:
-        pct = plays / total_plays_matched * 100
-        bar_width = int((plays / max_plays) * 25)
-        bar = "█" * bar_width
-        album_count = len(type_albums[release_type])
-        # Capitalize nicely
-        type_display = release_type.replace("-", " ").title()
-        console.print(f"  {type_display:<20} [green]{bar}[/green] {pct:>5.1f}% ({plays:,} plays, {album_count} releases)")
-
-    # Summary insight
-    album_pct = type_plays.get("album", 0) / total_plays_matched * 100 if total_plays_matched else 0
-    non_album = total_plays_matched - type_plays.get("album", 0)
-    non_album_pct = non_album / total_plays_matched * 100 if total_plays_matched else 0
-
-    console.print(f"\n[dim]You listen to {album_pct:.0f}% studio albums, {non_album_pct:.0f}% other formats.[/dim]")
-
-
-if __name__ == "__main__":
-    app()
+        artist_rows += f"""
+        <div class="artist-row">
+            <div class="rank">{i}</div>
+            <div class="artist-info">
+                <div class="artist-name">{ctx['name']}</div>
+                <div class="artist-stats">{ctx['plays']:,} plays · Fan since {ctx['first_year']} · {ctx['years_active']} years active</div>
+                <div class="sparkline">{all_years[0]} {sparkline} {all_years[-1]}</div>
+            </div>
+        </div>"""
+
+    # Build album table
+    album_rows = ""
+    for i, ctx in enumerate(album_contexts[:20], 1):
+        album_rows += f"""
+        <tr>
+            <td class="rank">{i}</td>
+            <td class="album-name">{ctx['album']}</td>
+            <td class="artist-name">{ctx['artist']}</td>
+            <td class="plays">{ctx['plays']:,}</td>
+            <td class="years">{ctx['years_active']}</td>
+        </tr>"""
+
+    # Critics section
+    critics_html = ""
+    if critics_all_time_stats:
+        aligned_critics_html = ""
+        for c in top_aligned_critics[:10]:
+            if c["overlap"] > 0:
+                aligned_critics_html += f'<div class="critic-row">{c["name"]}: {c["overlap"]}/{c["total"]} ({c["pct"]:.0f}%)</div>'
+
+        acclaimed_albums_html = ""
+        for a in most_acclaimed_albums[:15]:
+            acclaimed_albums_html += f"""
+            <div class="album-row">
+                <div class="album-info">
+                    <div class="album-title">{a['artist']} — {a['album']}</div>
+                    <div class="album-stats">{a['plays']} plays · {a['critics']} critic lists</div>
+                </div>
+            </div>"""
+
+        critics_html = f"""
+        <section class="critics-section">
+            <h2>🏆 You & The Critics (All-Time)</h2>
+            <p class="section-intro">Your alignment across all years (2011-2025)</p>
+            <div class="stat-big">
+                <div class="stat-value">{critics_all_time_stats['overlap_pct']:.1f}%</div>
+                <div class="stat-label">Overall alignment ({critics_all_time_stats['matched']:,} of {critics_all_time_stats['total_albums']:,} albums)</div>
+            </div>
+
+            <h3>Critics Who Share Your Taste</h3>
+            <div class="critics-list">{aligned_critics_html}</div>
+
+            <h3>Your Most Critically-Acclaimed Albums</h3>
+            <div class="albums-list">{acclaimed_albums_html}</div>
+        </section>"""
+
+    # Genre section
+    genre_html = ""
+    if mb_available and genre_breakdown_all:
+        genre_rows_html = ""
+        max_genre_pct = genre_breakdown_all[0]["pct"] if genre_breakdown_all else 1
+        for g in genre_breakdown_all[:12]:
+            width = (g["pct"] / max_genre_pct) * 100
+            genre_rows_html += f"""
+            <div class="genre-row">
+                <div class="genre-name">{g['name']}</div>
+                <div class="genre-bar-container">
+                    <div class="genre-bar" style="width: {width}%"></div>
+                </div>
+                <div class="genre-pct">{g['pct']:.1f}%</div>
+            </div>"""
+
+        genre_html = f"""
+        <section class="genre-section">
+            <h2>🎸 Your Sound (All-Time)</h2>
+            <p class="section-intro">Top genres across your entire listening history</p>
+            <div class="genre-list">{genre_rows_html}</div>
+        </section>"""
+
+    # Decade section
+    decade_html = ""
+    if decade_breakdown:
+        sorted_decades = sorted(decade_breakdown.items())
+        total_decade_plays = sum(decade_breakdown.values())
+        decade_rows_html = ""
+
+        for decade, plays in sorted_decades:
+            pct = plays / total_decade_plays * 100 if total_decade_plays > 0 else 0
+            decade_label = f"{decade}s" if decade >= 1950 else "Pre-1950"
+            decade_rows_html += f"""
+            <div class="decade-row">
+                <div class="decade-label">{decade_label}</div>
+                <div class="decade-bar-container">
+                    <div class="decade-bar" style="width: {pct}%"></div>
+                </div>
+                <div class="decade-pct">{pct:.1f}%</div>
+            </div>"""
+
+        decade_html = f"""
+        <section class="decade-section">
+            <h2>📅 Music By Decade</h2>
+            <p class="section-intro">When the music you listen to was released</p>
+            <div class="decade-list">{decade_rows_html}</div>
+        </section>"""
+
+    # Peak obsessions
+    peak_html = ""
+    if peak_obsessions:
+        peak_rows_html = ""
+        for obs in peak_obsessions[:12]:
+            peak_rows_html += f"""
+            <div class="peak-row">
+                <div class="peak-artist">{obs['artist']}</div>
+                <div class="peak-year">{obs['year']}</div>
+                <div class="peak-stats">{obs['plays']} plays ({obs['concentration']:.0f}% of total)</div>
+            </div>"""
+
+        peak_html = f"""
+        <section class="peak-section">
+            <h2>🔥 Peak Obsessions</h2>
+            <p class="section-intro">Artists and the years you couldn't stop playing them</p>
+            <div class="peak-list">{peak_rows_html}</div>
+        </section>"""
+
+    # Timeline sparkline
+    max_plays_year = max(plays_by_year.values()) if plays_by_year else 1
+    timeline_html = "".join(
+        f'<div class="year-bar" style="height: {plays_by_year.get(y, 0) / max_plays_year * 100}%" title="{y}: {plays_by_year.get(y, 0):,} plays"></div>'
+        for y in all_years
+    )
+
+    html = f"""<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>My All-Time Listening Overview</title>
+    <style>
+        :root {{
+            --bg: #0f0f0f;
+            --card-bg: #1a1a1a;
+            --text: #e5e5e5;
+            --text-dim: #737373;
+            --accent: #22d3ee;
+            --accent2: #a855f7;
+            --green: #4ade80;
+            --yellow: #facc15;
+        }}
+
+        * {{ box-sizing: border-box; margin: 0; padding: 0; }}
+
+        body {{
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+            background: var(--bg);
+            color: var(--text);
+            line-height: 1.6;
+            padding: 2rem;
+            max-width: 1000px;
+            margin: 0 auto;
+        }}
+
+        h1 {{
+            font-size: 3rem;
+            font-weight: 800;
+            text-align: center;
+            margin-bottom: 0.5rem;
+            background: linear-gradient(135deg, var(--accent), var(--accent2));
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
+            background-clip: text;
+        }}
+
+        .subtitle {{
+            text-align: center;
+            color: var(--text-dim);
+            margin-bottom: 3rem;
+        }}
+
+        section {{
+            background: var(--card-bg);
+            border-radius: 1rem;
+            padding: 2rem;
+            margin-bottom: 2rem;
+        }}
+
+        h2 {{
+            font-size: 1.5rem;
+            margin-bottom: 0.5rem;
+            color: var(--accent);
+        }}
+
+        h3 {{
+            font-size: 1.1rem;
+            margin: 1.5rem 0 1rem;
+            color: var(--text-dim);
+        }}
+
+        .section-intro {{
+            color: var(--text-dim);
+            margin-bottom: 1.5rem;
+        }}
+
+        .stats-grid {{
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+            gap: 1rem;
+            margin-bottom: 1.5rem;
+        }}
+
+        .stat {{
+            text-align: center;
+            padding: 1rem;
+            background: var(--bg);
+            border-radius: 0.5rem;
+        }}
+
+        .stat-value {{
+            font-size: 2rem;
+            font-weight: 700;
+            color: var(--accent);
+        }}
+
+        .stat-label {{
+            color: var(--text-dim);
+            font-size: 0.9rem;
+        }}
+
+        .stat-big {{
+            text-align: center;
+            padding: 2rem;
+            background: var(--bg);
+            border-radius: 0.75rem;
+            margin-bottom: 2rem;
+        }}
+
+        .stat-big .stat-value {{
+            font-size: 3rem;
+        }}
+
+        .timeline {{
+            display: flex;
+            align-items: flex-end;
+            height: 60px;
+            gap: 2px;
+            margin: 1rem 0;
+            padding: 0.5rem;
+            background: var(--bg);
+            border-radius: 0.5rem;
+        }}
+
+        .year-bar {{
+            flex: 1;
+            background: linear-gradient(180deg, var(--accent), var(--accent2));
+            border-radius: 2px 2px 0 0;
+            min-height: 2px;
+            transition: opacity 0.2s;
+        }}
+
+        .year-bar:hover {{
+            opacity: 0.7;
+        }}
+
+        .artist-row {{
+            display: flex;
+            gap: 1rem;
+            padding: 1rem 0;
+            border-bottom: 1px solid #2a2a2a;
+        }}
+
+        .rank {{
+            font-size: 1.25rem;
+            font-weight: 700;
+            color: var(--text-dim);
+            width: 2.5rem;
+            text-align: right;
+            flex-shrink: 0;
+        }}
+
+        .artist-info {{
+            flex: 1;
+        }}
+
+        .artist-name {{
+            font-weight: 600;
+            font-size: 1.1rem;
+            margin-bottom: 0.25rem;
+        }}
+
+        .artist-stats {{
+            font-size: 0.85rem;
+            color: var(--text-dim);
+            margin-bottom: 0.25rem;
+        }}
+
+        .sparkline {{
+            font-family: monospace;
+            font-size: 0.75rem;
+            color: var(--accent);
+            letter-spacing: 1px;
+        }}
+
+        table {{
+            width: 100%;
+            border-collapse: collapse;
+        }}
+
+        th {{
+            text-align: left;
+            padding: 0.5rem;
+            border-bottom: 2px solid #2a2a2a;
+            color: var(--text-dim);
+        }}
+
+        td {{
+            padding: 0.75rem 0.5rem;
+            border-bottom: 1px solid #2a2a2a;
+        }}
+
+        td.rank {{
+            width: 3rem;
+        }}
+
+        td.album-name {{
+            color: var(--yellow);
+            font-weight: 500;
+        }}
+
+        td.plays, td.years {{
+            text-align: right;
+            color: var(--green);
+        }}
+
+        .critic-row, .album-row, .peak-row {{
+            padding: 0.75rem 0;
+            border-bottom: 1px solid #2a2a2a;
+        }}
+
+        .genre-row, .decade-row {{
+            display: grid;
+            grid-template-columns: 150px 1fr 80px;
+            gap: 1rem;
+            align-items: center;
+            padding: 0.5rem 0;
+        }}
+
+        .genre-name, .decade-label {{
+            font-weight: 500;
+        }}
+
+        .genre-bar-container, .decade-bar-container {{
+            height: 8px;
+            background: #2a2a2a;
+            border-radius: 4px;
+            overflow: hidden;
+        }}
+
+        .genre-bar, .decade-bar {{
+            height: 100%;
+            background: linear-gradient(90deg, var(--accent), var(--accent2));
+            border-radius: 4px;
+        }}
+
+        .genre-pct, .decade-pct {{
+            text-align: right;
+            color: var(--text-dim);
+        }}
+
+        .peak-artist {{
+            font-weight: 600;
+            margin-bottom: 0.25rem;
+        }}
+
+        .peak-year {{
+            color: var(--accent);
+            font-size: 0.9rem;
+            margin-bottom: 0.25rem;
+        }}
+
+        .peak-stats {{
+            font-size: 0.85rem;
+            color: var(--text-dim);
+        }}
+
+        .album-info {{
+            padding: 0.5rem 0;
+        }}
+
+        .album-title {{
+            font-weight: 500;
+            margin-bottom: 0.25rem;
+        }}
+
+        .album-stats {{
+            font-size: 0.85rem;
+            color: var(--text-dim);
+        }}
+
+        footer {{
+            text-align: center;
+            color: var(--text-dim);
+            font-size: 0.85rem;
+            padding: 2rem 0;
+        }}
+
+        @media (max-width: 600px) {{
+            .genre-row, .decade-row {{
+                grid-template-columns: 1fr;
+                gap: 0.25rem;
+            }}
+
+            .genre-pct, .decade-pct {{
+                text-align: left;
+            }}
+        }}
+    </style>
+</head>
+<body>
+    <h1>My Listening Overview</h1>
+    <p class="subtitle">{first_scrobble:%B %Y} – {last_scrobble:%B %Y} · {years_of_data} years of listening</p>
+
+    <section>
+        <h2>📊 The Big Picture</h2>
+        <div class="stats-grid">
+            <div class="stat">
+                <div class="stat-value">{total_plays:,}</div>
+                <div class="stat-label">total plays</div>
+            </div>
+            <div class="stat">
+                <div class="stat-value">{unique_artists:,}</div>
+                <div class="stat-label">artists</div>
+            </div>
+            <div class="stat">
+                <div class="stat-value">{unique_albums:,}</div>
+                <div class="stat-label">albums</div>
+            </div>
+            <div class="stat">
+                <div class="stat-value">{peak_year[0]}</div>
+                <div class="stat-label">peak year</div>
+            </div>
+        </div>
+        <p class="section-intro">Listening intensity over time:</p>
+        <div class="timeline">{timeline_html}</div>
+    </section>
+
+    <section>
+        <h2>🎸 Your All-Time Favorites</h2>
+        <p class="section-intro">Top artists across your entire listening history</p>
+        <div class="artists-list">{artist_rows}</div>
+    </section>
+
+    <section>
+        <h2>💿 Your All-Time Albums</h2>
+        <p class="section-intro">The records you've lived with</p>
+        <table>
+            <thead>
+                <tr>
+                    <th>#</th>
+                    <th>Album</th>
+                    <th>Artist</th>
+                    <th style="text-align: right">Plays</th>
+                    <th style="text-align: right">Years</th>
+                </tr>
+            </thead>
+            <tbody>{album_rows}</tbody>
+        </table>
+    </section>
+
+    {peak_html}
+    {critics_html}
+    {genre_html}
+    {decade_html}
+
+    <footer>
+        Generated {datetime.now():%B %d, %Y} · Data from Last.fm
+    </footer>
+</body>
+</html>"""
+
+    return html

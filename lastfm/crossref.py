@@ -30,9 +30,10 @@ class CriticsAlbum:
 
 def normalize_for_matching(s: str) -> str:
     """Normalize a string for fuzzy matching."""
-    if not s:
+    import pandas as pd
+    if not s or pd.isna(s):
         return ""
-    s = s.lower().strip()
+    s = str(s).lower().strip()
     # Remove "the " prefix
     if s.startswith("the "):
         s = s[4:]

@@ -92,6 +92,14 @@ def first_plays(df: pd.DataFrame) -> pd.DataFrame:
     return first[["artist", "timestamp", "track", "album"]].sort_values("timestamp")
 
 
+def last_plays(df: pd.DataFrame) -> pd.DataFrame:
+    """Get the last play of each artist."""
+    # Sort by timestamp descending to get most recent plays first
+    sorted_df = df.sort_values("timestamp", ascending=False)
+    last = sorted_df.groupby("artist").first().reset_index()
+    return last[["artist", "timestamp", "track", "album"]].sort_values("timestamp", ascending=False)
+
+
 def artists_discovered_in_year(df: pd.DataFrame, year: int) -> pd.DataFrame:
     """Find artists first played in a given year.
 
@@ -107,6 +115,28 @@ def artists_discovered_in_year(df: pd.DataFrame, year: int) -> pd.DataFrame:
 
     discovered = discovered.merge(year_counts, on="artist", how="left")
     return discovered.sort_values("plays_in_year", ascending=False)
+
+
+def artists_abandoned_in_year(df: pd.DataFrame, year: int) -> pd.DataFrame:
+    """Find artists last played in a given year.
+
+    Returns artists whose last ever scrobble was in the specified year.
+    This reveals artists you stopped listening to in that year.
+    """
+    last = last_plays(df)
+    last["abandon_year"] = last["timestamp"].dt.year
+    abandoned = last[last["abandon_year"] == year].copy()
+
+    # Add total lifetime play counts for these artists
+    total_counts = df.groupby("artist").size().reset_index(name="total_plays")
+    abandoned = abandoned.merge(total_counts, on="artist", how="left")
+
+    # Add play counts in the abandon year
+    year_df = filter_by_year(df, year)
+    year_counts = year_df.groupby("artist").size().reset_index(name="plays_in_year")
+    abandoned = abandoned.merge(year_counts, on="artist", how="left")
+
+    return abandoned.sort_values("total_plays", ascending=False)
 
 
 def new_artists_in_period(
