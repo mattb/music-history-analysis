@@ -6,6 +6,7 @@ from typing import Optional
 import json
 import asyncio
 from collections import defaultdict
+from datetime import datetime, timezone
 import pandas as pd
 from rich.console import Console
 from rich.table import Table
@@ -14,6 +15,79 @@ from .. import data, crossref
 
 app = typer.Typer(help="Cross-reference with music critics")
 console = Console()
+
+
+def calculate_diversity_score(candidate: dict, selected: list[dict]) -> float:
+    """Calculate diversity score for MMR algorithm.
+
+    Returns a score from 0-1 where 1 means maximally different from selected items.
+    Measures artist and genre dissimilarity.
+    """
+    if not selected:
+        return 1.0  # First item is maximally diverse
+
+    candidate_artist = crossref.normalize_for_matching(candidate['artist'])
+
+    # Check if same artist already selected (strong penalty)
+    artist_diversity = 1.0
+    for sel in selected:
+        if crossref.normalize_for_matching(sel['artist']) == candidate_artist:
+            artist_diversity = 0.0  # Strong penalty for duplicate artist
+            break
+
+    # Could add genre-based diversity here if we had genre data
+    # For now, just use artist diversity
+    return artist_diversity
+
+
+def apply_mmr_diversification(candidates: list[dict], limit: int, lambda_param: float = 0.7) -> list[dict]:
+    """Apply Maximal Marginal Relevance to diversify recommendations.
+
+    Args:
+        candidates: List of candidate albums (must have 'weighted_score' or 'critics_count')
+        limit: Number of results to select
+        lambda_param: Balance between relevance (high) and diversity (low). Default 0.7.
+
+    Returns:
+        Diversified list of albums
+    """
+    if not candidates or limit >= len(candidates):
+        return candidates[:limit]
+
+    # Normalize scores to 0-1 range for MMR calculation
+    score_key = 'weighted_score' if 'weighted_score' in candidates[0] else 'critics_count'
+    max_score = max(c[score_key] for c in candidates)
+    min_score = min(c[score_key] for c in candidates)
+    score_range = max_score - min_score if max_score > min_score else 1
+
+    selected = []
+    remaining = candidates.copy()
+
+    while len(selected) < limit and remaining:
+        best_mmr_score = -1
+        best_candidate = None
+        best_idx = -1
+
+        for idx, candidate in enumerate(remaining):
+            # Normalize relevance score to 0-1
+            relevance = (candidate[score_key] - min_score) / score_range
+
+            # Calculate diversity score
+            diversity = calculate_diversity_score(candidate, selected)
+
+            # MMR score: balance relevance and diversity
+            mmr_score = lambda_param * relevance + (1 - lambda_param) * diversity
+
+            if mmr_score > best_mmr_score:
+                best_mmr_score = mmr_score
+                best_candidate = candidate
+                best_idx = idx
+
+        if best_candidate:
+            selected.append(best_candidate)
+            remaining.pop(best_idx)
+
+    return selected
 
 
 def get_csv_path(csv: Optional[Path] = None) -> Path:
@@ -191,6 +265,8 @@ def critics_unheard(
     limit: int = typer.Option(30, "--limit", "-n", help="Number of results"),
     known_artists: bool = typer.Option(False, "--known", "-k", help="Only show artists you've heard"),
     weighted: bool = typer.Option(False, "--weighted", "-w", help="Weight by critic overlap with your taste"),
+    diverse: bool = typer.Option(False, "--diverse", "-d", help="Diversify recommendations (avoid same artist/genre repetition)"),
+    show_similar: bool = typer.Option(False, "--show-similar", "-s", help="Show which of your artists are similar (uses critics embeddings)"),
 ):
     """Show highly-rated albums you haven't listened to (across all years or filter by --year)."""
     # Get global options from context
@@ -241,11 +317,14 @@ def critics_unheard(
                         'album': u['album'],
                         'critics_count': 0,
                         'years': [],
+                        'critics': [],  # List of critics who recommended this album
                         'artist_plays': your_artists.get(crossref.normalize_for_matching(u['artist']), 0),
                         'heard_artist': u['heard_artist'],
                     }
                 all_unheard[key]['critics_count'] += u['critics_count']
                 all_unheard[key]['years'].append(y)
+                # Aggregate critics across years
+                all_unheard[key]['critics'].extend(u.get('critics', []))
         except (IOError, json.JSONDecodeError):
             continue
 
@@ -255,13 +334,99 @@ def critics_unheard(
 
     # Sort by critics count (or weighted score if requested)
     if weighted:
-        # Calculate weighted score across all years
-        # For simplicity, weight by total critics_count (already aggregated)
+        # Calculate critic weights based on overlap with your taste across all years
+        critic_weights = {}  # critic_name -> overlap_percentage
+
+        for y in years_to_search:
+            try:
+                critics_data_year = crossref.load_critics_data(get_critics_path(y))
+
+                # Calculate overlap for each critic this year
+                for lst in critics_data_year['raw']:
+                    critic = lst['critic']
+                    if critic not in critic_weights:
+                        albums = lst['albums']
+                        total = len(albums)
+
+                        # Count overlap
+                        overlap_count = 0
+                        for album in albums:
+                            if album['artist'] and album['title']:
+                                key = (crossref.normalize_for_matching(album['artist']),
+                                       crossref.normalize_for_matching(album['title']))
+                                if key in your_albums:
+                                    overlap_count += 1
+
+                        # Use Szymkiewicz–Simpson coefficient for critic weight
+                        overlap_pct = (overlap_count / min(len(your_albums), total) * 100) if total > 0 else 0
+                        critic_weights[critic] = overlap_pct
+            except (IOError, json.JSONDecodeError):
+                continue
+
+        # Apply weighted scoring: sum of critic overlap percentages
         for u in unheard_list:
-            u['weighted_score'] = u['critics_count']
-        unheard_list = sorted(unheard_list, key=lambda x: -x['weighted_score'])
+            u['weighted_score'] = sum(critic_weights.get(c, 0) for c in u.get('critics', []))
+
+        unheard_list = sorted(unheard_list, key=lambda x: (-x['weighted_score'], -x['critics_count']))
     else:
         unheard_list = sorted(unheard_list, key=lambda x: -x['critics_count'])
+
+    # Apply MMR diversification if requested
+    if diverse:
+        unheard_list = apply_mmr_diversification(unheard_list, limit)
+    else:
+        unheard_list = unheard_list[:limit]
+
+    # Build similarity lookup if requested
+    similarity_lookup = {}  # normalized_artist -> list of similar user artists
+    if show_similar:
+        from .. import embeddings
+
+        console.print("[dim]Loading critics embeddings for similarity analysis...[/dim]")
+        try:
+            critics_emb = embeddings.get_or_build_critics_embeddings()
+
+            # Get your top artists by play count (top 100)
+            top_user_artists = sorted(your_artists.items(), key=lambda x: -x[1])[:100]
+            top_user_artist_names = [a for a, _ in top_user_artists]
+
+            # For each recommended artist, find which of your artists are similar
+            for u in unheard_list:
+                rec_artist_norm = crossref.normalize_for_matching(u['artist'])
+
+                if rec_artist_norm in critics_emb.artist_to_idx:
+                    # Find similar artists from your library in critics-space
+                    similar_from_yours = []
+
+                    rec_embedding = critics_emb.get_embedding(u['artist'])
+                    if rec_embedding is not None:
+                        from sklearn.metrics.pairwise import cosine_similarity
+                        import numpy as np
+
+                        for your_artist_norm in top_user_artist_names:
+                            your_emb = critics_emb.get_embedding(your_artist_norm)
+                            if your_emb is not None:
+                                sim = cosine_similarity(
+                                    rec_embedding.reshape(1, -1),
+                                    your_emb.reshape(1, -1)
+                                )[0][0]
+                                if sim > 0.3:  # Threshold for meaningful similarity
+                                    # Find original artist name
+                                    original_name = None
+                                    for _, row in df.iterrows():
+                                        artist = row.get("artist", "")
+                                        if pd.notna(artist) and crossref.normalize_for_matching(artist) == your_artist_norm:
+                                            original_name = artist
+                                            break
+                                    if original_name:
+                                        similar_from_yours.append((original_name, sim))
+
+                        # Sort by similarity and take top 2
+                        similar_from_yours.sort(key=lambda x: -x[1])
+                        similarity_lookup[rec_artist_norm] = similar_from_yours[:2]
+        except Exception as e:
+            console.print(f"[yellow]Could not load critics embeddings: {e}[/yellow]")
+            show_similar = False
 
     # Display results
     if year is not None:
@@ -276,19 +441,30 @@ def critics_unheard(
     table.add_column("Artist", style="cyan")
     table.add_column("Album", style="yellow")
     table.add_column("Critics", justify="right", style="green")
-    table.add_column("Artist Plays", justify="right", style="dim")
+    if show_similar:
+        table.add_column("Similar to", style="magenta")
+    else:
+        table.add_column("Artist Plays", justify="right", style="dim")
     if year is None:
         table.add_column("Years", style="dim")
 
-    for i, u in enumerate(unheard_list[:limit], 1):
+    for i, u in enumerate(unheard_list, 1):
         years_str = ", ".join(map(str, sorted(u['years']))) if year is None else None
+        rec_artist_norm = crossref.normalize_for_matching(u['artist'])
+
+        if show_similar:
+            similar_artists = similarity_lookup.get(rec_artist_norm, [])
+            similar_str = ", ".join([a for a, _ in similar_artists]) if similar_artists else "-"
+        else:
+            similar_str = str(u['artist_plays']) if u['artist_plays'] else "-"
+
         if year is None:
             table.add_row(
                 str(i),
                 u['artist'],
                 u['album'][:35] + "..." if len(u['album']) > 35 else u['album'],
                 str(u['critics_count']),
-                str(u['artist_plays']) if u['artist_plays'] else "-",
+                similar_str,
                 years_str,
             )
         else:
@@ -297,7 +473,7 @@ def critics_unheard(
                 u['artist'],
                 u['album'][:35] + "..." if len(u['album']) > 35 else u['album'],
                 str(u['critics_count']),
-                str(u['artist_plays']) if u['artist_plays'] else "-",
+                similar_str,
             )
 
     console.print(table)
@@ -401,7 +577,9 @@ def critics_list(
                 if key in your_albums:
                     overlap_count += 1
 
-        overlap_pct = (overlap_count / total * 100) if total > 0 else 0
+        # Szymkiewicz–Simpson coefficient (overlap coefficient): |A ∩ B| / min(|A|, |B|)
+        # More semantically correct than dividing by critic's list size only
+        overlap_pct = (overlap_count / min(len(your_albums), total) * 100) if total > 0 else 0
         critic_stats.append({
             'critic': critic,
             'albums': total,
@@ -947,3 +1125,275 @@ def critics_tracker(
 
         for p in heard[:5]:
             console.print(f"  {p['artist']} — {p['album']} ({p['critic_count']} aligned critics)")
+
+
+@app.command(name="regrets")
+def critics_regrets(
+    ctx: typer.Context,
+    limit: int = typer.Option(30, "--limit", "-n", help="Number of results"),
+    min_years: int = typer.Option(5, "--min-years", help="Minimum years since recommendation"),
+    max_years: Optional[int] = typer.Option(None, "--max-years", help="Maximum years since recommendation"),
+    known_only: bool = typer.Option(True, "--known-only/--all", help="Only show artists you've heard"),
+):
+    """Show old critically-acclaimed albums you've been ignoring for years."""
+    # Get global options from context
+    csv = ctx.obj.get("csv") if ctx.obj else None
+
+    df = data.load_scrobbles(get_csv_path(csv))
+
+    # Get current year
+    current_year = datetime.now(timezone.utc).year
+
+    # Build set of your albums (albums properly listened to)
+    listened_albums = data.get_albums_listened_to(df)
+    your_albums = set()
+    for artist, album in listened_albums:
+        key = (crossref.normalize_for_matching(artist),
+               crossref.normalize_for_matching(album))
+        your_albums.add(key)
+
+    # Build artist plays
+    your_artists = {}  # norm_artist -> plays
+    for _, row in df.iterrows():
+        artist = row.get("artist", "")
+        if pd.notna(artist) and artist:
+            artist_norm = crossref.normalize_for_matching(artist)
+            your_artists[artist_norm] = your_artists.get(artist_norm, 0) + 1
+
+    # Aggregate unheard albums from old years only
+    all_regrets = {}  # (norm_artist, norm_album) -> {artist, album, years_ago, first_year, critics_count, artist_plays}
+
+    # Calculate year range
+    max_year_threshold = current_year - min_years
+    min_year_threshold = current_year - max_years if max_years else 2011
+
+    for year in range(max(2011, min_year_threshold), max_year_threshold + 1):
+        json_path = get_critics_path(year)
+        if not json_path.exists():
+            continue
+
+        try:
+            critics_data = crossref.load_critics_data(json_path)
+            critics_albums = critics_data['albums']
+
+            # Check each critic album against ALL-TIME listening (not just that year)
+            for key, critic_album in critics_albums.items():
+                norm_artist, norm_album = key
+
+                # Check if you've EVER heard this album (using fuzzy matching)
+                match_key = crossref.find_album_match(your_albums, critic_album.artist, critic_album.album)
+
+                if not match_key:  # You've never heard it
+                    if key not in all_regrets:
+                        years_ago = current_year - year
+                        # Check if you've heard the artist at all
+                        heard_artist = norm_artist in your_artists
+                        all_regrets[key] = {
+                            'artist': critic_album.artist,
+                            'album': critic_album.album,
+                            'years_ago': years_ago,
+                            'first_year': year,
+                            'critics_count': 0,
+                            'years': [],
+                            'artist_plays': your_artists.get(norm_artist, 0),
+                            'heard_artist': heard_artist,
+                        }
+                    all_regrets[key]['critics_count'] += critic_album.critics_count
+                    all_regrets[key]['years'].append(year)
+        except (IOError, json.JSONDecodeError):
+            continue
+
+    regrets_list = list(all_regrets.values())
+
+    # Filter by known artists if requested
+    if known_only:
+        regrets_list = [r for r in regrets_list if r['heard_artist']]
+
+    # Sort by years_ago (oldest first = biggest regret), then by critics_count
+    regrets_list = sorted(regrets_list, key=lambda x: (-x['years_ago'], -x['critics_count']))[:limit]
+
+    # Display results
+    if max_years:
+        year_range = f"{min_years}-{max_years} Years"
+    else:
+        year_range = f"{min_years}+ Years"
+
+    if known_only:
+        title = f"Albums From Artists You Know That You've Been Ignoring For {year_range}"
+    else:
+        title = f"Critically-Acclaimed Albums You've Been Ignoring For {year_range}"
+
+    console.print(f"\n[bold red]═══ Regret Tracker ═══[/bold red]")
+    console.print(f"[bold cyan]{title}[/bold cyan]\n")
+
+    if not regrets_list:
+        console.print("[green]No regrets! You're keeping up with the classics.[/green]")
+        return
+
+    table = Table(show_header=True)
+    table.add_column("#", justify="right", style="dim", width=3)
+    table.add_column("Years Ignored", justify="right", style="red")
+    table.add_column("Artist", style="cyan")
+    table.add_column("Album", style="yellow")
+    table.add_column("Critics", justify="right", style="green")
+    table.add_column("Artist Plays", justify="right", style="dim")
+
+    for i, r in enumerate(regrets_list, 1):
+        years_str = f"{r['years_ago']} years" if r['years_ago'] > 1 else "1 year"
+        table.add_row(
+            str(i),
+            years_str,
+            r['artist'][:25] + "..." if len(r['artist']) > 25 else r['artist'],
+            r['album'][:30] + "..." if len(r['album']) > 30 else r['album'],
+            str(r['critics_count']),
+            str(r['artist_plays']) if r['artist_plays'] else "-",
+        )
+
+    console.print(table)
+
+    # Add some emotional messaging
+    if regrets_list:
+        oldest = regrets_list[0]
+        console.print(f"\n[dim italic]You've been ignoring {oldest['artist']} — {oldest['album'][:40]} for {oldest['years_ago']} years! 😱[/dim italic]")
+
+
+@app.command(name="taste-gaps")
+def critics_taste_gaps(
+    ctx: typer.Context,
+    limit: int = typer.Option(15, "--limit", "-n", help="Number of artists to analyze"),
+    min_plays: int = typer.Option(50, "--min-plays", help="Minimum plays for an artist to be included"),
+):
+    """Find where your taste diverges from critical consensus.
+
+    Compares your co-listening patterns with critics' co-listing patterns
+    to find artists where you and critics have different views on similarity.
+
+    DIVERGENT: Artists whose neighbors (in your library) differ from what critics list together.
+    ALIGNED: Artists where you and critics agree on what's similar.
+    """
+    from .. import embeddings
+    from sklearn.metrics.pairwise import cosine_similarity
+
+    # Get global options from context
+    csv = ctx.obj.get("csv") if ctx.obj else None
+
+    console.print("\n[bold magenta]═══ TASTE GAPS ═══[/bold magenta]")
+    console.print("[dim]Comparing your perception to critical consensus[/dim]\n")
+
+    # Load both embedding spaces
+    console.print("[dim]Loading embeddings...[/dim]")
+
+    csv_path = get_csv_path(csv)
+    df = data.load_scrobbles(csv_path)
+
+    try:
+        user_emb = embeddings.build_embeddings_from_csv(csv_path, min_plays=5)
+    except Exception as e:
+        console.print(f"[red]Error loading user embeddings: {e}[/red]")
+        raise typer.Exit(1)
+
+    try:
+        critics_emb = embeddings.get_or_build_critics_embeddings()
+    except Exception as e:
+        console.print(f"[red]Error loading critics embeddings: {e}[/red]")
+        raise typer.Exit(1)
+
+    # Find artists in both spaces with sufficient plays
+    common_artists = []
+    for artist in user_emb.artist_to_idx.keys():
+        norm = crossref.normalize_for_matching(artist)
+        if norm in critics_emb.artist_to_idx:
+            plays = len(df[df["artist"] == artist])
+            if plays >= min_plays:
+                common_artists.append((artist, norm, plays))
+
+    if not common_artists:
+        console.print("[yellow]No artists found in both your library and critics' lists[/yellow]")
+        raise typer.Exit(1)
+
+    console.print(f"[dim]Analyzing {len(common_artists)} artists in both spaces...[/dim]\n")
+
+    # For each common artist, compare their neighborhoods in both spaces
+    divergent = []
+    aligned = []
+
+    for artist, norm, plays in common_artists:
+        try:
+            # Get top similar in user space
+            user_similar = user_emb.find_similar(artist, top_n=15)
+            user_similar_set = set(
+                crossref.normalize_for_matching(a) for a, _ in user_similar
+            )
+
+            # Get top similar in critics space
+            critics_similar = critics_emb.find_similar(artist, top_n=15)
+            critics_similar_set = set(a for a, _ in critics_similar)
+
+            # Calculate Jaccard similarity between neighborhoods
+            intersection = len(user_similar_set & critics_similar_set)
+            union = len(user_similar_set | critics_similar_set)
+            jaccard = intersection / union if union > 0 else 0
+
+            # Get the differences
+            you_only = user_similar_set - critics_similar_set
+            critics_only = critics_similar_set - user_similar_set
+
+            entry = {
+                "artist": artist,
+                "plays": plays,
+                "jaccard": jaccard,
+                "you_only": list(you_only)[:3],
+                "critics_only": list(critics_only)[:3],
+            }
+
+            if jaccard < 0.15:  # Strong divergence
+                divergent.append(entry)
+            elif jaccard > 0.3:  # Good alignment
+                aligned.append(entry)
+
+        except ValueError:
+            continue
+
+    # Sort by divergence/alignment
+    divergent = sorted(divergent, key=lambda x: (x["jaccard"], -x["plays"]))[:limit]
+    aligned = sorted(aligned, key=lambda x: (-x["jaccard"], -x["plays"]))[:limit]
+
+    # Display divergent
+    if divergent:
+        console.print("[bold red]DIVERGENT[/bold red] (You see differently than critics)\n")
+
+        for d in divergent:
+            console.print(f"  [bold cyan]{d['artist']}[/bold cyan] ({d['plays']:,} plays)")
+
+            if d["you_only"]:
+                you_str = ", ".join(d["you_only"][:3])
+                console.print(f"    [dim]You group with:[/dim] {you_str}")
+
+            if d["critics_only"]:
+                critics_str = ", ".join(d["critics_only"][:3])
+                console.print(f"    [dim]Critics group with:[/dim] {critics_str}")
+
+            console.print()
+    else:
+        console.print("[dim]No strongly divergent artists found[/dim]\n")
+
+    # Display aligned
+    if aligned:
+        console.print("[bold green]ALIGNED[/bold green] (You and critics agree)\n")
+
+        table = Table(show_header=True, box=None)
+        table.add_column("Artist", style="cyan")
+        table.add_column("Plays", justify="right", style="green")
+        table.add_column("Alignment", justify="right", style="yellow")
+
+        for a in aligned[:10]:
+            alignment_pct = a["jaccard"] * 100
+            table.add_row(
+                a["artist"],
+                f"{a['plays']:,}",
+                f"{alignment_pct:.0f}%",
+            )
+
+        console.print(table)
+    else:
+        console.print("[dim]No strongly aligned artists found[/dim]")

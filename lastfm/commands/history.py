@@ -260,48 +260,167 @@ def history_evolution(
         console.print(f"  [bold]{year}[/bold] [green]{bar}[/green] {yd['total_plays']:,} plays")
         console.print(f"       [dim]{top3_str}[/dim]")
 
-    # Detect "eras" - periods of similar listening
-    console.print(f"\n[bold cyan]🎭 MUSICAL ERAS[/bold cyan]")
-    console.print("[dim]Detecting shifts in your dominant artists[/dim]\n")
+    # Statistical trend detection using Mann-Kendall test
+    if len(yearly_data) >= 3:
+        from scipy.stats import kendalltau
 
-    # Group years into eras based on top artist overlap
-    eras = []
-    current_era = None
+        console.print(f"\n[bold cyan]📊 STATISTICAL TREND ANALYSIS[/bold cyan]")
+        console.print("[dim]Mann-Kendall test for monotonic trends (α=0.05)[/dim]\n")
 
-    for i, yd in enumerate(yearly_data):
-        top_artists = set(a[0] for a in yd["top3"])
+        years = [yd["year"] for yd in yearly_data]
+        concentrations = [yd["concentration"] for yd in yearly_data]
+        unique_artists = [yd["unique_artists"] for yd in yearly_data]
+        total_plays = [yd["total_plays"] for yd in yearly_data]
 
-        if current_era is None:
-            current_era = {
-                "start": yd["year"],
-                "end": yd["year"],
-                "artists": top_artists,
-                "defining_artists": list(top_artists),
-            }
-        else:
-            # Check overlap with current era
-            overlap = len(top_artists & current_era["artists"])
-            if overlap >= 1:  # At least 1 shared top artist
-                current_era["end"] = yd["year"]
-                current_era["artists"] |= top_artists
+        # Test 1: Taste concentration trend
+        tau_conc, p_conc = kendalltau(years, concentrations)
+        if p_conc < 0.05:
+            trend_conc = "narrowing" if tau_conc > 0 else "broadening"
+            symbol_conc = "🔺" if tau_conc > 0 else "🔻"
+            console.print(f"  {symbol_conc} [bold]Taste Concentration:[/bold] {trend_conc} (τ={tau_conc:.3f}, p={p_conc:.4f})")
+            if tau_conc > 0:
+                console.print(f"     [dim]Your listening is becoming more focused on fewer artists over time[/dim]")
             else:
-                # New era
-                eras.append(current_era)
-                current_era = {
-                    "start": yd["year"],
-                    "end": yd["year"],
-                    "artists": top_artists,
-                    "defining_artists": list(top_artists),
-                }
+                console.print(f"     [dim]Your listening is becoming more diverse over time[/dim]")
+        else:
+            console.print(f"  ➖ [bold]Taste Concentration:[/bold] stable (no significant trend, p={p_conc:.4f})")
 
-    if current_era:
-        eras.append(current_era)
+        # Test 2: Artist diversity trend
+        tau_artists, p_artists = kendalltau(years, unique_artists)
+        if p_artists < 0.05:
+            trend_artists = "increasing" if tau_artists > 0 else "decreasing"
+            symbol_artists = "🔺" if tau_artists > 0 else "🔻"
+            console.print(f"  {symbol_artists} [bold]Artist Discovery:[/bold] {trend_artists} (τ={tau_artists:.3f}, p={p_artists:.4f})")
+            if tau_artists > 0:
+                console.print(f"     [dim]You're discovering more unique artists each year[/dim]")
+            else:
+                console.print(f"     [dim]You're discovering fewer unique artists each year[/dim]")
+        else:
+            console.print(f"  ➖ [bold]Artist Discovery:[/bold] stable (no significant trend, p={p_artists:.4f})")
 
-    for i, era in enumerate(eras, 1):
-        span = f"{era['start']}" if era["start"] == era["end"] else f"{era['start']}-{era['end']}"
-        defining = ", ".join(era["defining_artists"][:4])
-        console.print(f"  [bold]Era {i}: {span}[/bold]")
-        console.print(f"  [dim]Defined by: {defining}[/dim]\n")
+        # Test 3: Listening volume trend
+        tau_plays, p_plays = kendalltau(years, total_plays)
+        if p_plays < 0.05:
+            trend_plays = "increasing" if tau_plays > 0 else "decreasing"
+            symbol_plays = "🔺" if tau_plays > 0 else "🔻"
+            console.print(f"  {symbol_plays} [bold]Listening Volume:[/bold] {trend_plays} (τ={tau_plays:.3f}, p={p_plays:.4f})")
+            if tau_plays > 0:
+                console.print(f"     [dim]Your total listening is increasing over time[/dim]")
+            else:
+                console.print(f"     [dim]Your total listening is decreasing over time[/dim]")
+        else:
+            console.print(f"  ➖ [bold]Listening Volume:[/bold] stable (no significant trend, p={p_plays:.4f})")
+
+        console.print()
+
+    # Detect "eras" using hierarchical clustering
+    console.print(f"\n[bold cyan]🎭 MUSICAL ERAS (Clustering Analysis)[/bold cyan]")
+    console.print("[dim]Detecting periods of similar listening patterns[/dim]\n")
+
+    if len(yearly_data) >= 3:
+        from sklearn.cluster import AgglomerativeClustering
+        from sklearn.metrics import silhouette_score
+        import numpy as np
+
+        # Build year × artist feature matrix
+        # Get all artists that appeared in top 20 of any year
+        all_artists = set()
+        for yd in yearly_data:
+            year_df = df[df["year"] == yd["year"]]
+            top_artists = year_df.groupby("artist").size().nlargest(20).index.tolist()
+            all_artists.update(top_artists)
+
+        all_artists = sorted(all_artists)
+        artist_to_idx = {artist: idx for idx, artist in enumerate(all_artists)}
+
+        # Build feature matrix: years × artists (normalized play counts)
+        feature_matrix = np.zeros((len(yearly_data), len(all_artists)))
+
+        for year_idx, yd in enumerate(yearly_data):
+            year_df = df[df["year"] == yd["year"]]
+            artist_plays = year_df.groupby("artist").size()
+
+            for artist, plays in artist_plays.items():
+                if artist in artist_to_idx:
+                    artist_idx = artist_to_idx[artist]
+                    feature_matrix[year_idx, artist_idx] = plays
+
+        # Normalize each row (year) to unit norm
+        from sklearn.preprocessing import normalize
+        feature_matrix = normalize(feature_matrix, norm='l2', axis=1)
+
+        # Find optimal number of clusters using silhouette analysis
+        # Try 2 to min(10, n_years-1) clusters
+        max_clusters = min(10, len(yearly_data) - 1)
+        best_n_clusters = 2
+        best_silhouette = -1
+
+        if len(yearly_data) >= 4:  # Need at least 4 years for meaningful clustering
+            silhouette_scores = []
+            for n_clusters in range(2, max_clusters + 1):
+                clusterer = AgglomerativeClustering(n_clusters=n_clusters, linkage='ward')
+                labels = clusterer.fit_predict(feature_matrix)
+                silhouette_avg = silhouette_score(feature_matrix, labels)
+                silhouette_scores.append((n_clusters, silhouette_avg))
+
+                if silhouette_avg > best_silhouette:
+                    best_silhouette = silhouette_avg
+                    best_n_clusters = n_clusters
+
+            console.print(f"[dim]Silhouette analysis: optimal clusters = {best_n_clusters} (score: {best_silhouette:.3f})[/dim]\n")
+
+        # Apply clustering with optimal number of clusters
+        clusterer = AgglomerativeClustering(n_clusters=best_n_clusters, linkage='ward')
+        cluster_labels = clusterer.fit_predict(feature_matrix)
+
+        # Group years by cluster
+        clusters = {}
+        for year_idx, cluster_id in enumerate(cluster_labels):
+            if cluster_id not in clusters:
+                clusters[cluster_id] = []
+            clusters[cluster_id].append(yearly_data[year_idx])
+
+        # Sort clusters by first year
+        sorted_clusters = sorted(clusters.items(), key=lambda x: min(yd["year"] for yd in x[1]))
+
+        # Display eras
+        for era_num, (cluster_id, cluster_years) in enumerate(sorted_clusters, 1):
+            years = [yd["year"] for yd in cluster_years]
+            years.sort()
+
+            # Find defining artists (artists with highest average plays across this era)
+            era_artist_plays = {}
+            for yd in cluster_years:
+                year_df = df[df["year"] == yd["year"]]
+                artist_plays = year_df.groupby("artist").size()
+                for artist, plays in artist_plays.items():
+                    if artist not in era_artist_plays:
+                        era_artist_plays[artist] = []
+                    era_artist_plays[artist].append(plays)
+
+            # Calculate average plays and take top 5
+            artist_avg_plays = {
+                artist: np.mean(plays)
+                for artist, plays in era_artist_plays.items()
+            }
+            top_artists = sorted(artist_avg_plays.items(), key=lambda x: -x[1])[:5]
+            defining = ", ".join(a[0] for a in top_artists[:4])
+
+            # Format year range
+            if len(years) == 1:
+                span = str(years[0])
+            elif years == list(range(years[0], years[-1] + 1)):
+                # Contiguous years
+                span = f"{years[0]}-{years[-1]}"
+            else:
+                # Non-contiguous years
+                span = ", ".join(str(y) for y in years)
+
+            console.print(f"  [bold]Era {era_num}: {span}[/bold]")
+            console.print(f"  [dim]Defined by: {defining}[/dim]")
+            console.print(f"  [dim]Years: {len(years)} | Total plays: {sum(yd['total_plays'] for yd in cluster_years):,}[/dim]\n")
+    else:
+        console.print(f"  [dim]Need at least 3 years of data for clustering analysis[/dim]\n")
 
     # When did key artists enter your life?
     console.print(f"[bold cyan]🌟 WHEN KEY ARTISTS ENTERED YOUR LIFE[/bold cyan]\n")
@@ -326,3 +445,112 @@ def history_evolution(
         artists = by_discovery[year]
         artists_str = ", ".join(f"{a[0]} ({a[1]:,})" for a in sorted(artists, key=lambda x: -x[1])[:3])
         console.print(f"  [bold]{year}[/bold]: {artists_str}")
+
+
+@app.command(name="funnel")
+def history_funnel(
+    ctx: typer.Context,
+):
+    """Show artist discovery funnel - from first play to superfan.
+
+    Tracks conversion rates across stages:
+    - Discovery: First play
+    - Curiosity: 5+ plays
+    - Fan: 50+ plays
+    - Superfan: 200+ plays
+    """
+    # Get global options from context
+    csv = ctx.obj.get("csv") if ctx.obj else None
+    year = ctx.obj.get("year") if ctx.obj else None
+    year = year if year is not None else 2025
+
+    df_full = data.load_scrobbles(get_csv_path(csv))
+    df = data.filter_by_year(df_full, year)
+
+    console.print(f"\n[bold magenta]═══ DISCOVERY FUNNEL ({year}) ═══[/bold magenta]\n")
+
+    # Get all artists and their play counts for the year
+    artist_plays = df.groupby("artist").size().reset_index(name="plays")
+
+    # Define stages
+    discovered = len(artist_plays)  # All artists with 1+ plays
+    curiosity = len(artist_plays[artist_plays["plays"] >= 5])  # 5+ plays
+    fans = len(artist_plays[artist_plays["plays"] >= 50])  # 50+ plays
+    superfans = len(artist_plays[artist_plays["plays"] >= 200])  # 200+ plays
+
+    # Calculate conversion rates
+    disc_to_curiosity = (curiosity / discovered * 100) if discovered > 0 else 0
+    curiosity_to_fan = (fans / curiosity * 100) if curiosity > 0 else 0
+    fan_to_superfan = (superfans / fans * 100) if fans > 0 else 0
+    overall_conversion = (superfans / discovered * 100) if discovered > 0 else 0
+
+    console.print("[bold cyan]Conversion Funnel:[/bold cyan]\n")
+
+    # Stage 1
+    bar1_width = 50
+    bar1 = "█" * bar1_width
+    console.print(f"  [bold]Stage 1: Discovery (first play)[/bold]")
+    console.print(f"  [green]{bar1}[/green] {discovered:,} artists")
+    console.print(f"  [dim]100% of artists you tried this year[/dim]\n")
+
+    # Stage 2
+    bar2_width = int(bar1_width * (curiosity / discovered)) if discovered > 0 else 0
+    bar2 = "█" * bar2_width
+    console.print(f"  [bold]Stage 2: Curiosity (5+ plays)[/bold]")
+    console.print(f"  [yellow]{bar2}[/yellow] {curiosity:,} artists")
+    console.print(f"  [dim]{disc_to_curiosity:.1f}% conversion from discovery[/dim]\n")
+
+    # Stage 3
+    bar3_width = int(bar1_width * (fans / discovered)) if discovered > 0 else 0
+    bar3 = "█" * bar3_width
+    console.print(f"  [bold]Stage 3: Fan (50+ plays)[/bold]")
+    console.print(f"  [cyan]{bar3}[/cyan] {fans:,} artists")
+    console.print(f"  [dim]{curiosity_to_fan:.1f}% conversion from curiosity[/dim]\n")
+
+    # Stage 4
+    bar4_width = int(bar1_width * (superfans / discovered)) if discovered > 0 else 0
+    bar4 = "█" * bar4_width
+    console.print(f"  [bold]Stage 4: Superfan (200+ plays)[/bold]")
+    console.print(f"  [magenta]{bar4}[/magenta] {superfans:,} artists")
+    console.print(f"  [dim]{fan_to_superfan:.1f}% conversion from fan[/dim]\n")
+
+    # Summary
+    console.print(f"[bold cyan]Summary:[/bold cyan]")
+    console.print(f"  Overall Conversion: {overall_conversion:.2f}% (discovery → superfan)")
+    console.print(f"  Discovery Efficiency: You discovered {discovered:,} artists but only {superfans:,} became superfans\n")
+
+    # Show examples from each stage
+    console.print(f"[bold cyan]Examples:[/bold cyan]\n")
+
+    # Superfans
+    superfan_artists = artist_plays[artist_plays["plays"] >= 200].nlargest(5, "plays")
+    if not superfan_artists.empty:
+        console.print(f"  [bold magenta]Superfans (200+ plays):[/bold magenta]")
+        for _, row in superfan_artists.iterrows():
+            console.print(f"    • {row['artist']} ({row['plays']} plays)")
+        console.print()
+
+    # Fans (50-199 plays)
+    fan_artists = artist_plays[
+        (artist_plays["plays"] >= 50) & (artist_plays["plays"] < 200)
+    ].nlargest(5, "plays")
+    if not fan_artists.empty:
+        console.print(f"  [bold cyan]Fans (50-199 plays):[/bold cyan]")
+        for _, row in fan_artists.iterrows():
+            console.print(f"    • {row['artist']} ({row['plays']} plays)")
+        console.print()
+
+    # Curiosity (5-49 plays)
+    curiosity_artists = artist_plays[
+        (artist_plays["plays"] >= 5) & (artist_plays["plays"] < 50)
+    ].nlargest(5, "plays")
+    if not curiosity_artists.empty:
+        console.print(f"  [bold yellow]Curiosity (5-49 plays):[/bold yellow]")
+        for _, row in curiosity_artists.iterrows():
+            console.print(f"    • {row['artist']} ({row['plays']} plays)")
+        console.print()
+
+    # One-hit wonders (1-4 plays)
+    oneshot_count = len(artist_plays[artist_plays["plays"] < 5])
+    console.print(f"  [bold red]One-hit wonders (1-4 plays):[/bold red]")
+    console.print(f"    {oneshot_count:,} artists didn't make it past curiosity\n")

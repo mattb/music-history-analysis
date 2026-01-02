@@ -1,0 +1,725 @@
+"""Artist similarity embeddings using co-occurrence matrix and SVD."""
+
+import json
+import pickle
+import hashlib
+from pathlib import Path
+from typing import Dict, List, Tuple, Optional
+import pandas as pd
+import numpy as np
+from sklearn.decomposition import TruncatedSVD
+from sklearn.preprocessing import normalize
+from sklearn.metrics.pairwise import cosine_similarity
+
+
+def get_csv_cache_id(csv_path: Path) -> str:
+    """Generate a unique cache identifier for a CSV file.
+
+    Uses the absolute path to create a stable hash that's unique per CSV file.
+
+    Args:
+        csv_path: Path to the CSV file
+
+    Returns:
+        Short hash string identifying this CSV
+    """
+    # Use absolute path to ensure consistency
+    abs_path = csv_path.resolve()
+    # Hash the path to get a short, stable identifier
+    path_hash = hashlib.md5(str(abs_path).encode()).hexdigest()[:12]
+    # Use filename + hash for readability
+    return f"{csv_path.stem}_{path_hash}"
+
+
+class ArtistEmbeddings:
+    """Build and query artist similarity embeddings."""
+
+    def __init__(self, csv_path: Optional[Path] = None, cache_dir: Optional[Path] = None):
+        """Initialize embeddings manager.
+
+        Args:
+            csv_path: Path to CSV file (used to create CSV-specific cache subfolder)
+            cache_dir: Base cache directory (default: ~/.cache/lastfm-analysis)
+        """
+        if cache_dir is None:
+            cache_dir = Path.home() / ".cache" / "lastfm-analysis"
+
+        # Create CSV-specific subfolder if csv_path provided
+        if csv_path is not None:
+            csv_id = get_csv_cache_id(csv_path)
+            self.cache_dir = cache_dir / csv_id
+        else:
+            self.cache_dir = cache_dir
+
+        self.cache_dir.mkdir(parents=True, exist_ok=True)
+        self.csv_path = csv_path
+
+        self.embeddings: Optional[np.ndarray] = None
+        self.artist_to_idx: Optional[Dict[str, int]] = None
+        self.idx_to_artist: Optional[Dict[int, str]] = None
+        self.svd_model: Optional[TruncatedSVD] = None
+
+    def build_from_scrobbles(
+        self,
+        df: pd.DataFrame,
+        n_components: int = 50,
+        time_window: str = "W",  # Week-based co-occurrence
+        min_plays: int = 5,
+        method: str = "cooccurrence",  # "cooccurrence" or "temporal"
+    ) -> None:
+        """Build embeddings from scrobble data.
+
+        Args:
+            df: DataFrame with scrobble data (must have 'artist' and 'timestamp')
+            n_components: Number of embedding dimensions (default: 50)
+            time_window: Pandas resample frequency for time windows (default: 'W' for weekly)
+            min_plays: Minimum plays for an artist to be included (default: 5)
+            method: "cooccurrence" (artists × artists) or "temporal" (artists × time) (default: "cooccurrence")
+        """
+        print(f"Building artist embeddings (method: {method})...")
+
+        # Filter to artists with minimum plays
+        artist_counts = df["artist"].value_counts()
+        valid_artists = artist_counts[artist_counts >= min_plays].index.tolist()
+        df_filtered = df[df["artist"].isin(valid_artists)].copy()
+
+        print(f"  Artists after filtering (min {min_plays} plays): {len(valid_artists)}")
+
+        # Create artist index mapping
+        self.artist_to_idx = {artist: idx for idx, artist in enumerate(valid_artists)}
+        self.idx_to_artist = {idx: artist for artist, idx in self.artist_to_idx.items()}
+
+        if method == "cooccurrence":
+            # Build artist × artist co-occurrence matrix
+            # matrix[i,j] = number of weeks where both artist i and artist j were played
+            print(f"  Building artist co-occurrence matrix...")
+
+            df_filtered["time_window"] = df_filtered["timestamp"].dt.to_period(time_window)
+            time_windows = df_filtered["time_window"].unique()
+
+            print(f"  Time windows ({time_window}): {len(time_windows)}")
+
+            # Initialize symmetric matrix
+            n_artists = len(valid_artists)
+            matrix = np.zeros((n_artists, n_artists))
+
+            # For each time window, find which artists were played
+            for window in time_windows:
+                window_artists = df_filtered[df_filtered["time_window"] == window]["artist"].unique()
+                window_indices = [self.artist_to_idx[a] for a in window_artists if a in self.artist_to_idx]
+
+                # Increment co-occurrence for all pairs (including self)
+                for i in window_indices:
+                    for j in window_indices:
+                        matrix[i, j] += 1
+
+            print(f"  Matrix shape: {matrix.shape}")
+            print(f"  Matrix density: {(matrix > 0).sum() / matrix.size * 100:.2f}%")
+
+            # Normalize by the geometric mean of individual counts to avoid bias toward popular artists
+            # matrix[i,j] = cooccur(i,j) / sqrt(count(i) * count(j))
+            diag = np.sqrt(np.diag(matrix))
+            diag[diag == 0] = 1  # Avoid division by zero
+            matrix = matrix / np.outer(diag, diag)
+
+            print(f"  Normalized by geometric mean (Jaccard-style)")
+
+        else:  # temporal method
+            # Build artists × time_windows matrix (original approach)
+            df_filtered["time_window"] = df_filtered["timestamp"].dt.to_period(time_window)
+            time_windows = df_filtered["time_window"].unique()
+
+            print(f"  Time windows ({time_window}): {len(time_windows)}")
+            print(f"  Building temporal matrix...")
+
+            matrix = np.zeros((len(valid_artists), len(time_windows)))
+
+            for window_idx, window in enumerate(time_windows):
+                window_plays = df_filtered[df_filtered["time_window"] == window]
+                artist_plays = window_plays["artist"].value_counts()
+
+                for artist, plays in artist_plays.items():
+                    if artist in self.artist_to_idx:
+                        artist_idx = self.artist_to_idx[artist]
+                        matrix[artist_idx, window_idx] = plays
+
+            print(f"  Matrix shape: {matrix.shape}")
+            print(f"  Matrix density: {(matrix > 0).sum() / matrix.size * 100:.2f}%")
+
+            # Log scaling + TF-IDF + normalization
+            matrix = np.log1p(matrix)
+            artist_week_counts = (matrix > 0).sum(axis=1, keepdims=True)
+            idf = np.log(matrix.shape[1] / (artist_week_counts + 1))
+            matrix = matrix * idf
+            matrix = normalize(matrix, norm="l2", axis=0)
+            print(f"  Applied TF-IDF and normalization")
+
+        # Normalize rows before SVD
+        matrix = normalize(matrix, norm="l2", axis=1)
+
+        # Apply SVD to reduce dimensionality
+        print(f"  Applying SVD (n_components={n_components})...")
+        self.svd_model = TruncatedSVD(n_components=n_components, random_state=42)
+        self.embeddings = self.svd_model.fit_transform(matrix)
+
+        # Normalize embeddings for cosine similarity
+        self.embeddings = normalize(self.embeddings, norm="l2", axis=1)
+
+        explained_var = self.svd_model.explained_variance_ratio_.sum() * 100
+        print(f"  Explained variance: {explained_var:.1f}%")
+        print(f"  Embeddings shape: {self.embeddings.shape}")
+        print(f"✓ Embeddings built successfully\n")
+
+    def get_dimension_poles(
+        self,
+        dimension: int,
+        top_n: int = 5,
+    ) -> Dict[str, List[Tuple[str, float]]]:
+        """Get artists at extreme ends of a dimension.
+
+        Args:
+            dimension: Dimension index (0 to n_components-1)
+            top_n: Number of artists to return at each pole
+
+        Returns:
+            Dict with 'positive' and 'negative' lists of (artist, loading) tuples
+        """
+        if self.embeddings is None:
+            raise ValueError("Embeddings not built yet. Call build_from_scrobbles() first.")
+
+        if dimension < 0 or dimension >= self.embeddings.shape[1]:
+            raise ValueError(f"Dimension must be 0 to {self.embeddings.shape[1] - 1}")
+
+        dim_values = self.embeddings[:, dimension]
+
+        # Get indices of highest/lowest values
+        top_indices = np.argsort(dim_values)[-top_n:][::-1]
+        bottom_indices = np.argsort(dim_values)[:top_n]
+
+        return {
+            "positive": [(self.idx_to_artist[i], float(dim_values[i])) for i in top_indices],
+            "negative": [(self.idx_to_artist[i], float(dim_values[i])) for i in bottom_indices],
+        }
+
+    def get_explained_variance(self) -> np.ndarray:
+        """Get explained variance ratio for each dimension.
+
+        Returns:
+            Array of variance explained per dimension (sums to less than 1.0)
+        """
+        if self.svd_model is None:
+            raise ValueError("Embeddings not built yet. Call build_from_scrobbles() first.")
+
+        return self.svd_model.explained_variance_ratio_
+
+    def get_embedding(self, artist: str) -> Optional[np.ndarray]:
+        """Get embedding vector for an artist.
+
+        Args:
+            artist: Artist name
+
+        Returns:
+            Embedding vector or None if not found
+        """
+        if self.embeddings is None:
+            return None
+
+        # Try exact match first
+        if artist in self.artist_to_idx:
+            return self.embeddings[self.artist_to_idx[artist]]
+
+        # Try case-insensitive match
+        artist_lower = artist.lower()
+        for a, idx in self.artist_to_idx.items():
+            if a.lower() == artist_lower:
+                return self.embeddings[idx]
+
+        return None
+
+    def find_similar(
+        self,
+        artist: str,
+        top_n: int = 10,
+        min_similarity: float = 0.0,
+    ) -> List[Tuple[str, float]]:
+        """Find artists similar to the given artist.
+
+        Args:
+            artist: Artist name to find similar artists for
+            top_n: Number of similar artists to return
+            min_similarity: Minimum similarity threshold (0-1)
+
+        Returns:
+            List of (artist_name, similarity_score) tuples, sorted by similarity
+        """
+        if self.embeddings is None:
+            raise ValueError("Embeddings not built yet. Call build_from_scrobbles() first.")
+
+        # Normalize artist name for matching (case-insensitive)
+        artist_lower = artist.lower()
+        matching_artists = [
+            a for a in self.artist_to_idx.keys()
+            if artist_lower in a.lower() or a.lower() in artist_lower
+        ]
+
+        if not matching_artists:
+            raise ValueError(f"Artist '{artist}' not found in embeddings")
+
+        # Use exact match if available, otherwise first match
+        if artist in matching_artists:
+            query_artist = artist
+        else:
+            query_artist = matching_artists[0]
+
+        query_idx = self.artist_to_idx[query_artist]
+        query_embedding = self.embeddings[query_idx].reshape(1, -1)
+
+        # Compute cosine similarities
+        similarities = cosine_similarity(query_embedding, self.embeddings)[0]
+
+        # Get top similar artists (excluding the query artist itself)
+        similar_indices = similarities.argsort()[::-1]
+        results = []
+
+        for idx in similar_indices:
+            if idx == query_idx:
+                continue  # Skip the query artist itself
+
+            similarity = similarities[idx]
+            if similarity < min_similarity:
+                break
+
+            artist_name = self.idx_to_artist[idx]
+            results.append((artist_name, float(similarity)))
+
+            if len(results) >= top_n:
+                break
+
+        return results
+
+    def save(self, cache_name: str = "artist_embeddings") -> None:
+        """Save embeddings to cache.
+
+        Args:
+            cache_name: Name for the cache file (without extension)
+        """
+        cache_path = self.cache_dir / f"{cache_name}.pkl"
+
+        cache_data = {
+            "embeddings": self.embeddings,
+            "artist_to_idx": self.artist_to_idx,
+            "idx_to_artist": self.idx_to_artist,
+            "svd_model": self.svd_model,
+        }
+
+        with open(cache_path, "wb") as f:
+            pickle.dump(cache_data, f)
+
+        print(f"Saved embeddings to: {cache_path}")
+
+    def load(self, cache_name: str = "artist_embeddings") -> bool:
+        """Load embeddings from cache.
+
+        Args:
+            cache_name: Name of the cache file (without extension)
+
+        Returns:
+            True if loaded successfully, False otherwise
+        """
+        cache_path = self.cache_dir / f"{cache_name}.pkl"
+
+        if not cache_path.exists():
+            return False
+
+        with open(cache_path, "rb") as f:
+            cache_data = pickle.load(f)
+
+        self.embeddings = cache_data["embeddings"]
+        self.artist_to_idx = cache_data["artist_to_idx"]
+        self.idx_to_artist = cache_data["idx_to_artist"]
+        self.svd_model = cache_data["svd_model"]
+
+        print(f"Loaded embeddings from cache: {cache_path}")
+        print(f"  {len(self.artist_to_idx)} artists, {self.embeddings.shape[1]} dimensions")
+
+        return True
+
+
+def build_embeddings_from_csv(
+    csv_path: Path,
+    n_components: int = 50,
+    time_window: str = "W",
+    min_plays: int = 5,
+    method: str = "cooccurrence",
+    force_rebuild: bool = False,
+) -> ArtistEmbeddings:
+    """Build or load artist embeddings from CSV file.
+
+    Args:
+        csv_path: Path to scrobbles CSV
+        n_components: Number of embedding dimensions
+        time_window: Time window for co-occurrence ('D' = daily, 'W' = weekly)
+        min_plays: Minimum plays for an artist to be included
+        method: "cooccurrence" (artist × artist) or "temporal" (artist × time)
+        force_rebuild: Force rebuild even if cached embeddings exist
+
+    Returns:
+        ArtistEmbeddings instance
+    """
+    from . import data
+
+    # Pass csv_path to create CSV-specific cache directory
+    embeddings = ArtistEmbeddings(csv_path=csv_path)
+
+    # Create cache name that includes method and min_plays
+    cache_name = f"artist_embeddings_{method}_minplays{min_plays}"
+
+    # Try to load from cache
+    if not force_rebuild and embeddings.load(cache_name=cache_name):
+        return embeddings
+
+    # Build from scratch
+    df = data.load_scrobbles(csv_path)
+    embeddings.build_from_scrobbles(
+        df,
+        n_components=n_components,
+        time_window=time_window,
+        min_plays=min_plays,
+        method=method,
+    )
+
+    # Save to cache with method and min_plays in filename
+    embeddings.save(cache_name=cache_name)
+
+    return embeddings
+
+
+class CriticsEmbeddings:
+    """Build embeddings from critics' co-listing patterns.
+
+    Artists that appear on the same critic's list are considered similar.
+    This captures "critical consensus" similarity, which differs from
+    personal listening patterns.
+    """
+
+    def __init__(self, cache_dir: Optional[Path] = None):
+        """Initialize critics embeddings manager.
+
+        Args:
+            cache_dir: Base cache directory (default: ~/.cache/lastfm-analysis)
+        """
+        if cache_dir is None:
+            cache_dir = Path.home() / ".cache" / "lastfm-analysis"
+
+        self.cache_dir = cache_dir / "critics_embeddings"
+        self.cache_dir.mkdir(parents=True, exist_ok=True)
+
+        self.embeddings: Optional[np.ndarray] = None
+        self.artist_to_idx: Optional[Dict[str, int]] = None
+        self.idx_to_artist: Optional[Dict[int, str]] = None
+        self.svd_model: Optional[TruncatedSVD] = None
+        self.years_covered: Optional[List[int]] = None
+
+    def build_from_critics_data(
+        self,
+        critics_loader,  # Callable[[int], dict] - loads critics data for a year
+        years: Optional[List[int]] = None,
+        n_components: int = 50,
+        min_critics: int = 2,
+    ) -> None:
+        """Build embeddings from critics' co-listing patterns.
+
+        For each critic's list, all artists on that list are considered
+        to co-occur. The co-occurrence count is the number of times two
+        artists appear on the same critic's list across all years.
+
+        Args:
+            critics_loader: Function that takes a year and returns critics data dict
+            years: Years to include (default: 2011-2025)
+            n_components: Number of embedding dimensions
+            min_critics: Minimum critics listing an artist to be included
+        """
+        from . import crossref
+
+        if years is None:
+            years = list(range(2011, 2026))
+
+        print(f"Building critics embeddings from {len(years)} years of data...")
+
+        # First pass: collect all artists and their critics
+        artist_critics: Dict[str, set] = {}  # normalized_artist -> set of (critic, year)
+
+        for year in years:
+            try:
+                data = critics_loader(year)
+                raw = data.get("raw", data)  # Handle both formats
+
+                for lst in raw:
+                    critic = lst.get("critic", "unknown")
+                    albums = lst.get("albums", [])
+
+                    for album in albums:
+                        artist = album.get("artist", "")
+                        if artist:
+                            norm_artist = crossref.normalize_for_matching(artist)
+                            if norm_artist not in artist_critics:
+                                artist_critics[norm_artist] = set()
+                            artist_critics[norm_artist].add((critic, year))
+            except (IOError, json.JSONDecodeError, KeyError):
+                continue
+
+        # Filter to artists with sufficient presence
+        valid_artists = [
+            a for a, critics in artist_critics.items()
+            if len(critics) >= min_critics
+        ]
+        valid_artists = sorted(valid_artists)
+
+        print(f"  Artists with {min_critics}+ critic listings: {len(valid_artists)}")
+
+        if len(valid_artists) < n_components:
+            raise ValueError(
+                f"Not enough artists ({len(valid_artists)}) for {n_components} components. "
+                f"Try lowering min_critics or adding more years."
+            )
+
+        # Build index mappings
+        self.artist_to_idx = {a: i for i, a in enumerate(valid_artists)}
+        self.idx_to_artist = {i: a for a, i in self.artist_to_idx.items()}
+
+        # Second pass: build co-occurrence matrix
+        print(f"  Building co-listing matrix...")
+        n = len(valid_artists)
+        matrix = np.zeros((n, n), dtype=np.float32)
+
+        for year in years:
+            try:
+                data = critics_loader(year)
+                raw = data.get("raw", data)
+
+                for lst in raw:
+                    # Get all valid artists on this single list
+                    list_artists = set()
+                    for album in lst.get("albums", []):
+                        artist = album.get("artist", "")
+                        if artist:
+                            norm_artist = crossref.normalize_for_matching(artist)
+                            if norm_artist in self.artist_to_idx:
+                                list_artists.add(norm_artist)
+
+                    # Increment co-occurrence for all pairs on this list
+                    for a1 in list_artists:
+                        for a2 in list_artists:
+                            matrix[self.artist_to_idx[a1], self.artist_to_idx[a2]] += 1
+            except (IOError, json.JSONDecodeError, KeyError):
+                continue
+
+        print(f"  Matrix shape: {matrix.shape}")
+        print(f"  Matrix density: {(matrix > 0).sum() / matrix.size * 100:.2f}%")
+
+        # Normalize by geometric mean (same as user embeddings)
+        diag = np.sqrt(np.diag(matrix))
+        diag[diag == 0] = 1
+        matrix = matrix / np.outer(diag, diag)
+
+        print(f"  Normalized by geometric mean")
+
+        # Normalize rows before SVD
+        matrix = normalize(matrix, norm="l2", axis=1)
+
+        # Apply SVD
+        print(f"  Applying SVD (n_components={n_components})...")
+        self.svd_model = TruncatedSVD(n_components=n_components, random_state=42)
+        self.embeddings = self.svd_model.fit_transform(matrix)
+
+        # Normalize embeddings for cosine similarity
+        self.embeddings = normalize(self.embeddings, norm="l2", axis=1)
+
+        self.years_covered = years
+
+        explained_var = self.svd_model.explained_variance_ratio_.sum() * 100
+        print(f"  Explained variance: {explained_var:.1f}%")
+        print(f"  Embeddings shape: {self.embeddings.shape}")
+        print(f"✓ Critics embeddings built successfully\n")
+
+    def find_similar(
+        self,
+        artist: str,
+        top_n: int = 10,
+        min_similarity: float = 0.0,
+    ) -> List[Tuple[str, float]]:
+        """Find artists similar to the given artist in critics-space.
+
+        Args:
+            artist: Artist name (will be normalized for matching)
+            top_n: Number of similar artists to return
+            min_similarity: Minimum similarity threshold (0-1)
+
+        Returns:
+            List of (artist_name, similarity_score) tuples
+        """
+        from . import crossref
+
+        if self.embeddings is None:
+            raise ValueError("Embeddings not built. Call build_from_critics_data() first.")
+
+        # Normalize for matching
+        norm_artist = crossref.normalize_for_matching(artist)
+
+        if norm_artist not in self.artist_to_idx:
+            raise ValueError(f"Artist '{artist}' not found in critics embeddings")
+
+        query_idx = self.artist_to_idx[norm_artist]
+        query_embedding = self.embeddings[query_idx].reshape(1, -1)
+
+        # Compute cosine similarities
+        similarities = cosine_similarity(query_embedding, self.embeddings)[0]
+
+        # Get top similar artists (excluding query)
+        similar_indices = similarities.argsort()[::-1]
+        results = []
+
+        for idx in similar_indices:
+            if idx == query_idx:
+                continue
+
+            similarity = similarities[idx]
+            if similarity < min_similarity:
+                break
+
+            # Return normalized artist name
+            results.append((self.idx_to_artist[idx], float(similarity)))
+
+            if len(results) >= top_n:
+                break
+
+        return results
+
+    def get_embedding(self, artist: str) -> Optional[np.ndarray]:
+        """Get embedding vector for an artist.
+
+        Args:
+            artist: Artist name (will be normalized)
+
+        Returns:
+            Embedding vector or None if not found
+        """
+        from . import crossref
+
+        if self.embeddings is None:
+            return None
+
+        norm_artist = crossref.normalize_for_matching(artist)
+        if norm_artist in self.artist_to_idx:
+            return self.embeddings[self.artist_to_idx[norm_artist]]
+
+        return None
+
+    def get_dimension_poles(
+        self,
+        dimension: int,
+        top_n: int = 5,
+    ) -> Dict[str, List[Tuple[str, float]]]:
+        """Get artists at extreme ends of a dimension."""
+        if self.embeddings is None:
+            raise ValueError("Embeddings not built.")
+
+        if dimension < 0 or dimension >= self.embeddings.shape[1]:
+            raise ValueError(f"Dimension must be 0 to {self.embeddings.shape[1] - 1}")
+
+        dim_values = self.embeddings[:, dimension]
+
+        top_indices = np.argsort(dim_values)[-top_n:][::-1]
+        bottom_indices = np.argsort(dim_values)[:top_n]
+
+        return {
+            "positive": [(self.idx_to_artist[i], float(dim_values[i])) for i in top_indices],
+            "negative": [(self.idx_to_artist[i], float(dim_values[i])) for i in bottom_indices],
+        }
+
+    def get_explained_variance(self) -> np.ndarray:
+        """Get explained variance ratio for each dimension."""
+        if self.svd_model is None:
+            raise ValueError("Embeddings not built.")
+        return self.svd_model.explained_variance_ratio_
+
+    def save(self, cache_name: str = "critics_embeddings_2011-2025") -> None:
+        """Save embeddings to cache."""
+        cache_path = self.cache_dir / f"{cache_name}.pkl"
+
+        cache_data = {
+            "embeddings": self.embeddings,
+            "artist_to_idx": self.artist_to_idx,
+            "idx_to_artist": self.idx_to_artist,
+            "svd_model": self.svd_model,
+            "years_covered": self.years_covered,
+        }
+
+        with open(cache_path, "wb") as f:
+            pickle.dump(cache_data, f)
+
+        print(f"Saved critics embeddings to: {cache_path}")
+
+    def load(self, cache_name: str = "critics_embeddings_2011-2025") -> bool:
+        """Load embeddings from cache."""
+        cache_path = self.cache_dir / f"{cache_name}.pkl"
+
+        if not cache_path.exists():
+            return False
+
+        with open(cache_path, "rb") as f:
+            cache_data = pickle.load(f)
+
+        self.embeddings = cache_data["embeddings"]
+        self.artist_to_idx = cache_data["artist_to_idx"]
+        self.idx_to_artist = cache_data["idx_to_artist"]
+        self.svd_model = cache_data["svd_model"]
+        self.years_covered = cache_data.get("years_covered", [])
+
+        print(f"Loaded critics embeddings from cache: {cache_path}")
+        print(f"  {len(self.artist_to_idx)} artists, {self.embeddings.shape[1]} dimensions")
+
+        return True
+
+
+def get_or_build_critics_embeddings(
+    force_rebuild: bool = False,
+    min_critics: int = 2,
+) -> CriticsEmbeddings:
+    """Get or build critics embeddings.
+
+    Args:
+        force_rebuild: Force rebuild even if cached
+        min_critics: Minimum critics for an artist to be included
+
+    Returns:
+        CriticsEmbeddings instance
+    """
+    from . import crossref
+    from pathlib import Path
+    import json
+
+    def critics_loader(year: int) -> dict:
+        """Load critics data for a year."""
+        json_path = Path(__file__).parent.parent / f"critics-{year}.json"
+        if not json_path.exists():
+            raise IOError(f"No critics data for {year}")
+        with open(json_path) as f:
+            return {"raw": json.load(f)}
+
+    embeddings = CriticsEmbeddings()
+    cache_name = f"critics_embeddings_2011-2025_min{min_critics}"
+
+    if not force_rebuild and embeddings.load(cache_name=cache_name):
+        return embeddings
+
+    # Build from scratch
+    embeddings.build_from_critics_data(
+        critics_loader=critics_loader,
+        years=list(range(2011, 2026)),
+        n_components=50,
+        min_critics=min_critics,
+    )
+    embeddings.save(cache_name=cache_name)
+
+    return embeddings

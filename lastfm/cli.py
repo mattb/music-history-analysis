@@ -5,9 +5,10 @@ from pathlib import Path
 from typing import Optional
 from rich.console import Console
 import httpx
+import webbrowser
 
 from . import data, lastfm_api
-from .commands import listen, critics, history, metadata, spotify
+from .commands import listen, critics, history, metadata, spotify, visualize
 
 app = typer.Typer(
     help="Analyze your Last.fm listening history.",
@@ -59,6 +60,7 @@ app.add_typer(critics.app, name="critics", help="Cross-reference with music crit
 app.add_typer(history.app, name="history", help="Long-term taste evolution")
 app.add_typer(metadata.app, name="metadata", help="MusicBrainz metadata enrichment")
 app.add_typer(spotify.app, name="spotify", help="Spotify integration")
+app.add_typer(visualize.app, name="visualize", help="Generate visual representations")
 
 
 # Root-level commands (most common operations)
@@ -335,6 +337,64 @@ def artist(
             for year, album, count in sorted(unheard, key=lambda x: (-x[2], -x[0])):
                 console.print(f"    {year}: {album} ({count} critics)")
 
+    # --- Similar Artists (User Embeddings) ---
+    console.print(f"\n[bold blue]Similar in Your Library[/bold blue]")
+    console.print("[dim]Based on your co-listening patterns[/dim]\n")
+
+    try:
+        from . import embeddings as emb_module
+
+        csv_path = get_csv_path(csv)
+        user_emb = emb_module.build_embeddings_from_csv(csv_path, min_plays=5)
+
+        try:
+            user_similar = user_emb.find_similar(canonical_name, top_n=5)
+
+            if user_similar:
+                for similar_artist, similarity in user_similar:
+                    # Get play count for this artist
+                    similar_plays = len(df[df["artist"] == similar_artist])
+                    pct = similarity * 100
+                    console.print(f"  {similar_artist} ({pct:.0f}%) - {similar_plays:,} plays")
+            else:
+                console.print("[dim]No similar artists found in your library[/dim]")
+        except ValueError:
+            console.print("[dim]Artist not in embeddings (needs more plays)[/dim]")
+    except Exception as e:
+        console.print(f"[dim]Could not load user embeddings: {e}[/dim]")
+
+    # --- Similar Artists (Critics Embeddings) ---
+    console.print(f"\n[bold yellow]Critics Also Group With[/bold yellow]")
+    console.print("[dim]Artists critics list together (critical consensus)[/dim]\n")
+
+    try:
+        from . import embeddings as emb_module
+
+        critics_emb = emb_module.get_or_build_critics_embeddings()
+
+        try:
+            critics_similar = critics_emb.find_similar(canonical_name, top_n=5)
+
+            if critics_similar:
+                for similar_artist_norm, similarity in critics_similar:
+                    # Check if you've played this artist
+                    similar_df = df[df["artist"].apply(lambda x: crossref.normalize_for_matching(x) == similar_artist_norm)]
+                    if not similar_df.empty:
+                        display_name = similar_df["artist"].mode().iloc[0]
+                        plays = len(similar_df)
+                        pct = similarity * 100
+                        console.print(f"  {display_name} ({pct:.0f}%) - {plays:,} plays")
+                    else:
+                        # Artist you haven't played - mark it!
+                        pct = similarity * 100
+                        console.print(f"  {similar_artist_norm} ({pct:.0f}%) - [red]0 plays[/red] [yellow]← explore![/yellow]")
+            else:
+                console.print("[dim]Artist not found in critics data[/dim]")
+        except ValueError:
+            console.print("[dim]Artist not in critics embeddings[/dim]")
+    except Exception as e:
+        console.print(f"[dim]Could not load critics embeddings: {e}[/dim]")
+
 
 @app.command()
 def overview(
@@ -589,6 +649,68 @@ def overview(
         except Exception as e:
             mb_available = False
 
+    # ============ BRIDGE ARTISTS ============
+    # Find artists that connect different regions of your taste
+    # Uses similarity variance - artists whose similar artists are diverse
+    from . import embeddings as emb_module
+
+    bridge_artists = []
+    try:
+        csv_path = get_csv_path(csv)
+        user_emb = emb_module.build_embeddings_from_csv(csv_path, min_plays=5)
+
+        if user_emb.embeddings is not None and len(user_emb.embeddings) >= 50:
+            import numpy as np
+            from sklearn.metrics.pairwise import cosine_similarity
+
+            # For each artist, measure the diversity of their similar artists
+            # Bridge artists have similar artists that are NOT similar to each other
+            artist_diversity = []
+
+            # Get top artists by play count
+            artist_plays_lookup = {}
+            for artist_name in user_emb.artist_to_idx.keys():
+                plays = len(df_full[df_full["artist"] == artist_name])
+                artist_plays_lookup[artist_name] = plays
+
+            top_by_plays = sorted(artist_plays_lookup.items(), key=lambda x: -x[1])[:200]
+
+            for artist_name, plays in top_by_plays:
+                try:
+                    similar = user_emb.find_similar(artist_name, top_n=8)
+
+                    if len(similar) >= 4:
+                        # Get embeddings of similar artists
+                        similar_embeddings = []
+                        for sim_artist, _ in similar:
+                            if sim_artist in user_emb.artist_to_idx:
+                                idx = user_emb.artist_to_idx[sim_artist]
+                                similar_embeddings.append(user_emb.embeddings[idx])
+
+                        if len(similar_embeddings) >= 4:
+                            # Calculate pairwise similarity between similar artists
+                            sim_matrix = cosine_similarity(similar_embeddings)
+                            # Get off-diagonal elements (similarity between pairs)
+                            off_diag = sim_matrix[np.triu_indices_from(sim_matrix, k=1)]
+
+                            # Low average similarity = diverse neighborhood = bridge artist
+                            avg_internal_sim = np.mean(off_diag)
+
+                            # Bridge artists have low internal similarity (diverse neighbors)
+                            if avg_internal_sim < 0.6:  # Neighbors are not too similar to each other
+                                artist_diversity.append({
+                                    "artist": artist_name,
+                                    "diversity": 1 - avg_internal_sim,  # Higher = more diverse
+                                    "plays": plays,
+                                })
+                except ValueError:
+                    continue
+
+            # Sort by diversity
+            bridge_artists = sorted(artist_diversity, key=lambda x: (-x["diversity"], -x["plays"]))[:10]
+    except Exception:
+        pass  # Skip if embeddings not available
+
     # ============ CONSOLE OUTPUT ============
     if not html:
         from datetime import datetime
@@ -690,6 +812,16 @@ def overview(
                 console.print(f"  [dim]{obs['plays']} plays that year ({obs['concentration']:.0f}% of all {obs['artist']} plays)[/dim]")
             console.print()
 
+        # Bridge artists
+        if bridge_artists:
+            console.print("[bold cyan]🌉 BRIDGE ARTISTS[/bold cyan]")
+            console.print("[dim]  Artists whose similar artists are diverse (connecting different tastes)[/dim]\n")
+
+            for ba in bridge_artists[:8]:
+                diversity_pct = ba['diversity'] * 100
+                console.print(f"  [bold]{ba['artist']}[/bold] — {diversity_pct:.0f}% neighborhood diversity ({ba['plays']:,} plays)")
+            console.print()
+
         # Critics section
         if critics_all_time_stats:
             console.print("[bold cyan]🏆 YOU & THE CRITICS (ALL-TIME)[/bold cyan]")
@@ -779,6 +911,11 @@ def overview(
         )
         html.write_text(html_content)
         console.print(f"[green]Generated HTML overview: {html}[/green]")
+
+        # Open in browser
+        absolute_path = html.resolve()
+        webbrowser.open(f"file://{absolute_path}")
+        console.print(f"[dim]Opening in browser...[/dim]")
 
 
 @app.command()
@@ -1416,6 +1553,11 @@ def review(
         )
         html.write_text(html_content)
         console.print(f"[green]Generated HTML report: {html}[/green]")
+
+        # Open in browser
+        absolute_path = html.resolve()
+        webbrowser.open(f"file://{absolute_path}")
+        console.print(f"[dim]Opening in browser...[/dim]")
 
 
 def generate_review_html(
