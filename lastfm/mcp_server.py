@@ -13,13 +13,16 @@ Usage:
 
 import json
 import os
+import sqlite3
+from collections import defaultdict
 from pathlib import Path
 from typing import Any, Optional
 
 import numpy as np
+import pandas as pd
 from fastmcp import FastMCP
 
-from . import crossref, data, embeddings
+from . import crossref, data, embeddings, musicbrainz_db
 
 
 def _to_serializable(obj: Any) -> Any:
@@ -364,6 +367,10 @@ def _analyze_single_artist(df: "pd.DataFrame", artist: str) -> dict:
     last_play = artist_plays["timestamp"].max()
     total_plays = len(artist_plays)
 
+    # Year-by-year breakdown
+    plays_by_year = artist_plays.groupby("year").size().to_dict()
+    peak_year = max(plays_by_year, key=plays_by_year.get) if plays_by_year else None
+
     # Albums played
     albums = artist_plays.groupby("album").size().sort_values(ascending=False)
 
@@ -405,6 +412,8 @@ def _analyze_single_artist(df: "pd.DataFrame", artist: str) -> dict:
         "last_play": last_play.isoformat() if last_play else None,
         "total_plays": total_plays,
         "years_active": (last_play.year - first_play.year + 1) if first_play and last_play else 0,
+        "plays_by_year": plays_by_year,
+        "peak_year": peak_year,
         "albums_played": [
             {"album": album, "plays": int(plays)}
             for album, plays in albums.head(10).items()
@@ -560,22 +569,127 @@ def get_critic_alignment(limit: int = 20) -> list:
 
 
 @mcp.tool
-def get_year_review(year: int = 2025) -> dict:
-    """Get comprehensive year-in-review data.
+def get_temporal_patterns(year: int | None = None) -> dict:
+    """Analyze when listening happens.
 
-    Returns listening stats, top artists/albums with context, new discoveries,
-    critics alignment, and metadata breakdown (genres, labels, countries).
-    This is the richest single view of a user's listening year.
+    Returns time-of-day distribution, day-of-week patterns,
+    and monthly patterns. Useful for understanding listening context.
 
     Args:
-        year: Year to review (default: 2025)
+        year: Specific year to analyze (None = all time)
+    """
+    _ensure_loaded()
+    df = _state.df
+
+    if year is not None:
+        df = data.filter_by_year(df, year)
+
+    if len(df) == 0:
+        return {"error": f"No data for year {year}"}
+
+    total = len(df)
+
+    # Hour of day (0-23)
+    hour_counts = df.groupby("hour").size()
+    hours = {
+        int(h): {"plays": int(c), "pct": round(c / total * 100, 1)}
+        for h, c in hour_counts.items()
+    }
+
+    # Day of week
+    weekday_order = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"]
+    weekday_counts = df.groupby("weekday").size()
+    weekdays = {
+        day: {"plays": int(weekday_counts.get(day, 0)), "pct": round(weekday_counts.get(day, 0) / total * 100, 1)}
+        for day in weekday_order
+    }
+
+    # Month (1-12)
+    month_names = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"]
+    month_counts = df.groupby("month").size()
+    months = {
+        month_names[m - 1]: {"plays": int(month_counts.get(m, 0)), "pct": round(month_counts.get(m, 0) / total * 100, 1)}
+        for m in range(1, 13)
+    }
+
+    # Peak times
+    peak_hour = hour_counts.idxmax() if len(hour_counts) > 0 else None
+    peak_weekday = weekday_counts.idxmax() if len(weekday_counts) > 0 else None
+    peak_month = month_counts.idxmax() if len(month_counts) > 0 else None
+
+    return _to_serializable({
+        "period": str(year) if year else "all time",
+        "total_plays": total,
+        "by_hour": hours,
+        "by_weekday": weekdays,
+        "by_month": months,
+        "peak_hour": int(peak_hour) if peak_hour is not None else None,
+        "peak_weekday": peak_weekday,
+        "peak_month": month_names[peak_month - 1] if peak_month else None,
+    })
+
+
+@mcp.tool
+def get_period_summary(start_year: int, end_year: int) -> dict:
+    """Get aggregated listening stats for a year range.
+
+    Returns total plays, unique artists/albums, top artists across the period,
+    year-by-year breakdown, and discovery rate.
+
+    Args:
+        start_year: First year of the period
+        end_year: Last year of the period (inclusive)
     """
     _ensure_loaded()
     df_full = _state.df
+
+    # Filter to date range
+    df = df_full[(df_full["year"] >= start_year) & (df_full["year"] <= end_year)]
+
+    if len(df) == 0:
+        return {"error": f"No data for period {start_year}-{end_year}"}
+
+    # Aggregate stats
+    result = {
+        "period": f"{start_year}-{end_year}",
+        "total_plays": len(df),
+        "unique_artists": df["artist"].nunique(),
+        "unique_albums": df[df["album"] != ""]["album"].nunique(),
+        "unique_tracks": df["track"].nunique(),
+        "years": {},
+        "top_artists": [],
+        "discoveries_per_year": {},
+    }
+
+    # Year-by-year breakdown
+    for year in range(start_year, end_year + 1):
+        year_df = data.filter_by_year(df_full, year)
+        if len(year_df) > 0:
+            result["years"][year] = {
+                "plays": len(year_df),
+                "artists": year_df["artist"].nunique(),
+            }
+
+            # Count discoveries for this year
+            discovered = data.artists_discovered_in_year(df_full, year)
+            result["discoveries_per_year"][year] = len(discovered)
+
+    # Top artists across the period
+    top = data.top_artists(df, limit=20)
+    result["top_artists"] = [
+        {"artist": row["artist"], "plays": int(row["plays"])}
+        for _, row in top.iterrows()
+    ]
+
+    return _to_serializable(result)
+
+
+def _get_single_year_review(df_full, year: int) -> dict:
+    """Internal helper for single year review."""
     df = data.filter_by_year(df_full, year)
 
     if len(df) == 0:
-        return {"error": f"No listening data for {year}"}
+        return {"year": year, "error": f"No listening data for {year}"}
 
     result = {
         "year": year,
@@ -707,7 +821,347 @@ def get_year_review(year: int = 2025) -> dict:
             "top_aligned_critics": top_critics,
         }
 
-    return _to_serializable(result)
+    # MusicBrainz metadata
+    db_stats = musicbrainz_db.get_database_stats()
+    if db_stats and db_stats.get("has_full_schema"):
+        try:
+            conn = sqlite3.connect(musicbrainz_db.MUSICBRAINZ_DB)
+
+            # Get album plays for this year
+            df_albums = df[df["album"] != ""].copy()
+            df_albums = df_albums[df_albums["artist"].notna()]
+            album_plays = df_albums.groupby(["artist", "album"]).size().reset_index(name="plays")
+
+            # Collect metadata
+            genre_plays = defaultdict(int)
+            label_plays = defaultdict(int)
+            country_plays = defaultdict(int)
+            new_releases = 0
+            catalog_releases = 0
+            albums_matched = 0
+
+            for _, row in album_plays.iterrows():
+                artist = row["artist"]
+                album_name = row["album"]
+                plays = row["plays"]
+
+                info = musicbrainz_db.lookup_release(artist, album_name, conn)
+                if info:
+                    albums_matched += 1
+
+                    if info.genres:
+                        for g in info.genres:
+                            genre_plays[g] += plays
+
+                    if info.labels:
+                        for l in info.labels:
+                            label_plays[l] += plays
+
+                    if info.country:
+                        country_plays[info.country] += plays
+
+                    if info.year == year:
+                        new_releases += plays
+                    elif info.year:
+                        catalog_releases += plays
+
+            conn.close()
+
+            if albums_matched > 0:
+                total_matched_plays = new_releases + catalog_releases
+
+                # Genre breakdown (top 10)
+                sorted_genres = sorted(genre_plays.items(), key=lambda x: -x[1])
+                total_genre_plays = sum(g[1] for g in sorted_genres) or 1
+
+                # Label breakdown (top 10)
+                sorted_labels = sorted(label_plays.items(), key=lambda x: -x[1])
+                total_label_plays = sum(l[1] for l in sorted_labels) or 1
+
+                # Country breakdown
+                country_names = {
+                    "US": "United States", "GB": "United Kingdom", "JP": "Japan",
+                    "DE": "Germany", "FR": "France", "CA": "Canada", "AU": "Australia",
+                    "SE": "Sweden", "NL": "Netherlands", "XW": "Worldwide", "XE": "Europe",
+                }
+                sorted_countries = sorted(country_plays.items(), key=lambda x: -x[1])
+                total_country_plays = sum(c[1] for c in sorted_countries) or 1
+
+                result["metadata"] = {
+                    "albums_matched": albums_matched,
+                    "genres": [
+                        {"name": g, "plays": p, "pct": round(p / total_genre_plays * 100, 1)}
+                        for g, p in sorted_genres[:10]
+                    ],
+                    "labels": [
+                        {"name": l, "plays": p, "pct": round(p / total_label_plays * 100, 1)}
+                        for l, p in sorted_labels[:10]
+                    ],
+                    "countries": [
+                        {"code": c, "name": country_names.get(c, c), "plays": p,
+                         "pct": round(p / total_country_plays * 100, 1)}
+                        for c, p in sorted_countries[:8]
+                    ],
+                    "new_vs_catalog": {
+                        "new_pct": round(new_releases / total_matched_plays * 100, 1) if total_matched_plays > 0 else 0,
+                        "catalog_pct": round(catalog_releases / total_matched_plays * 100, 1) if total_matched_plays > 0 else 0,
+                    },
+                }
+        except Exception:
+            pass  # MusicBrainz not available, metadata stays None
+
+    return result
+
+
+@mcp.tool
+def get_year_review(years: list[int] | int = 2025) -> dict | list:
+    """Get comprehensive year-in-review data for one or more years.
+
+    Returns listening stats, top artists/albums with context, new discoveries,
+    critics alignment, and metadata breakdown (genres, labels, countries).
+    This is the richest single view of a user's listening year.
+
+    Args:
+        years: Year or list of years to review (default: 2025)
+    """
+    _ensure_loaded()
+    df_full = _state.df
+
+    # Normalize to list
+    if isinstance(years, int):
+        single_year = True
+        years = [years]
+    else:
+        single_year = False
+
+    results = []
+    for year in years:
+        result = _get_single_year_review(df_full, year)
+        results.append(result)
+
+    # Return single dict if single year requested, list otherwise
+    if single_year:
+        return _to_serializable(results[0])
+    return _to_serializable(results)
+
+
+@mcp.tool
+def get_listening_by_release_era(
+    release_start: int,
+    release_end: int,
+    limit: int = 50,
+) -> dict:
+    """Get all plays of music released in a specific era.
+
+    Answers: "What's my relationship with music from the 90s?"
+    Uses MusicBrainz release years to filter.
+
+    Args:
+        release_start: First release year to include
+        release_end: Last release year to include (inclusive)
+        limit: Maximum albums to return
+    """
+    _ensure_loaded()
+    df = _state.df
+
+    # Check MusicBrainz availability
+    db_stats = musicbrainz_db.get_database_stats()
+    if not db_stats or not db_stats.get("has_full_schema"):
+        return {"error": "MusicBrainz database not available. Run: lastfm metadata download"}
+
+    conn = sqlite3.connect(musicbrainz_db.MUSICBRAINZ_DB)
+
+    # Get unique albums
+    df_albums = df[df["album"] != ""].copy()
+    df_albums = df_albums[df_albums["artist"].notna()]
+    album_plays = df_albums.groupby(["artist", "album"]).size().reset_index(name="plays")
+
+    era_albums = []
+    era_artists = set()
+    total_plays = 0
+
+    for _, row in album_plays.iterrows():
+        artist = row["artist"]
+        album_name = row["album"]
+        plays = row["plays"]
+
+        info = musicbrainz_db.lookup_release(artist, album_name, conn)
+        if info and info.year and release_start <= info.year <= release_end:
+            era_albums.append({
+                "artist": artist,
+                "album": album_name,
+                "release_year": info.year,
+                "plays": plays,
+                "genres": info.genres[:3] if info.genres else [],
+            })
+            era_artists.add(artist)
+            total_plays += plays
+
+    conn.close()
+
+    # Sort by plays
+    era_albums.sort(key=lambda x: -x["plays"])
+
+    return _to_serializable({
+        "era": f"{release_start}-{release_end}",
+        "total_plays": total_plays,
+        "unique_artists": len(era_artists),
+        "unique_albums": len(era_albums),
+        "top_albums": era_albums[:limit],
+    })
+
+
+@mcp.tool
+def get_common_transitions(artist: str, top_n: int = 10) -> dict:
+    """Find what typically plays before and after an artist.
+
+    Returns common predecessors and successors based on
+    sequential plays within listening sessions.
+
+    Args:
+        artist: Artist to analyze transitions for
+        top_n: Number of top transitions to return
+    """
+    try:
+        _ensure_loaded()
+        df = _state.df
+
+        # Find rows where this artist plays
+        artist_lower = artist.lower()
+        artist_mask = df["artist"].str.lower() == artist_lower
+
+        if not artist_mask.any():
+            return {"error": f"Artist '{artist}' not found in listening history"}
+
+        # Get actual artist name
+        actual_name = df[artist_mask]["artist"].iloc[0]
+        total_plays = artist_mask.sum()
+
+        # Use a simplified approach: look at adjacent plays without full session detection
+        # This is much faster and still captures the pattern
+        df_sorted = df.sort_values("timestamp").reset_index(drop=True)
+        artist_indices = df_sorted[df_sorted["artist"].str.lower() == artist_lower].index.tolist()
+
+        # Track before/after artists (only count if within 30 min gap)
+        before_counts = defaultdict(int)
+        after_counts = defaultdict(int)
+
+        for idx in artist_indices:
+            current_time = df_sorted.loc[idx, "timestamp"]
+
+            # Get previous row
+            if idx > 0:
+                prev_row = df_sorted.loc[idx - 1]
+                gap = (current_time - prev_row["timestamp"]).total_seconds() / 60
+                if gap <= 30:  # Same session (30 min gap)
+                    prev_artist = prev_row["artist"]
+                    if prev_artist.lower() != artist_lower:
+                        before_counts[prev_artist] += 1
+
+            # Get next row
+            if idx < len(df_sorted) - 1:
+                next_row = df_sorted.loc[idx + 1]
+                gap = (next_row["timestamp"] - current_time).total_seconds() / 60
+                if gap <= 30:  # Same session
+                    next_artist = next_row["artist"]
+                    if next_artist.lower() != artist_lower:
+                        after_counts[next_artist] += 1
+
+        # Sort and format
+        top_before = sorted(before_counts.items(), key=lambda x: -x[1])[:top_n]
+        top_after = sorted(after_counts.items(), key=lambda x: -x[1])[:top_n]
+
+        return _to_serializable({
+            "artist": actual_name,
+            "total_plays": total_plays,
+            "plays_before": [
+                {"artist": a, "count": c} for a, c in top_before
+            ],
+            "plays_after": [
+                {"artist": a, "count": c} for a, c in top_after
+            ],
+        })
+    except Exception as e:
+        return {"error": f"Exception in get_common_transitions: {type(e).__name__}: {str(e)}"}
+
+
+@mcp.tool
+def get_discovery_context(artist: str) -> dict:
+    """Understand how an artist was discovered.
+
+    Returns: what played in same session as first listen,
+    what played in days before/after, any patterns.
+
+    Args:
+        artist: Artist to get discovery context for
+    """
+    try:
+        _ensure_loaded()
+        df = _state.df
+
+        # Find first play of this artist
+        artist_lower = artist.lower()
+        artist_plays = df[df["artist"].str.lower() == artist_lower].copy()
+
+        if len(artist_plays) == 0:
+            return {"error": f"Artist '{artist}' not found in listening history"}
+
+        # Get actual name and first play
+        first_play = artist_plays.loc[artist_plays["timestamp"].idxmin()]
+        actual_name = first_play["artist"]
+        first_timestamp = first_play["timestamp"]
+        first_track = first_play["track"]
+        first_album = first_play["album"]
+
+        # Get plays from day before and after (for context, doesn't need sessions)
+        day_before = first_timestamp - pd.Timedelta(days=1)
+        day_after = first_timestamp + pd.Timedelta(days=1)
+
+        before_plays = df[(df["timestamp"] >= day_before) & (df["timestamp"] < first_timestamp)]
+        after_plays = df[(df["timestamp"] > first_timestamp) & (df["timestamp"] <= day_after)]
+
+        # Get unique artists from before/after (excluding the discovered artist)
+        artists_before = before_plays[before_plays["artist"].str.lower() != artist_lower]["artist"].value_counts().head(5)
+        artists_after = after_plays[after_plays["artist"].str.lower() != artist_lower]["artist"].value_counts().head(5)
+
+        # For session analysis, only process a narrow window around first play (faster)
+        window_start = first_timestamp - pd.Timedelta(hours=6)
+        window_end = first_timestamp + pd.Timedelta(hours=6)
+        df_window = df[(df["timestamp"] >= window_start) & (df["timestamp"] <= window_end)].copy()
+
+        # Detect sessions only in the small window
+        df_sessions = data.detect_sessions(df_window, gap_minutes=30)
+        session_matches = df_sessions[df_sessions["timestamp"] == first_timestamp]
+
+        session_artists = []
+        session_track_count = 0
+        if len(session_matches) > 0:
+            first_session_idx = session_matches.index[0]
+            first_session_id = df_sessions.loc[first_session_idx, "session_id"]
+            session_plays = df_sessions[df_sessions["session_id"] == first_session_id]
+            session_artists = session_plays[session_plays["artist"].str.lower() != artist_lower]["artist"].unique().tolist()
+            session_track_count = len(session_plays)
+
+        return _to_serializable({
+            "artist": actual_name,
+            "first_play": {
+                "timestamp": first_timestamp.isoformat(),
+                "track": first_track,
+                "album": first_album,
+            },
+            "discovery_session": {
+                "other_artists": session_artists[:10],
+                "total_tracks_in_session": session_track_count,
+            },
+            "context_day_before": [
+                {"artist": a, "plays": int(c)} for a, c in artists_before.items()
+            ],
+            "context_day_after": [
+                {"artist": a, "plays": int(c)} for a, c in artists_after.items()
+            ],
+        })
+    except Exception as e:
+        return {"error": f"Exception in get_discovery_context: {type(e).__name__}: {str(e)}"}
 
 
 # =============================================================================
