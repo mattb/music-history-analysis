@@ -961,63 +961,158 @@ regrets = [
 
 Based on critique analysis and priority interviews, the following phases are planned:
 
-### Phase A: Critics-as-Vectors (2-3 sessions)
+### Phase A: Critics-as-Vectors ✅ COMPLETE
 
 Embed each critic as a vector in the same space as artists for better taste matching.
 
-```
-├── Add rank weighting to critics data loading
-│   Weight = 1 / log2(rank + 1)
-├── Create CriticVectorEmbeddings class
-│   critic_vector = weighted_average(artist_vectors on their lists)
-├── Modify critics matching to use vector similarity
-│   Find critics nearest to your taste-vector
-├── Add "critic drift" detection to `critics list`
-│   Track alignment over time: "aligned in 2018, drifted by 2023"
-└── Enhance `critics unheard` with critic-neighborhood scoring
-    Weight recommendations by critic-to-you vector similarity
+**Implemented:**
+- ✅ Rank weighting: `weight = 1 / log2(rank + 1)` with list-length normalization
+- ✅ `CriticVectorEmbeddings` class in `embeddings.py`
+- ✅ `critics aligned` command - find critics by vector similarity with drift sparklines
+- ✅ `critics list --vector` - show vector similarity column, auto-sorts by vector
+- ✅ `critics unheard --vector-weighted` - weight recommendations by critic vectors
+
+**New CLI:**
+```bash
+lastfm critics aligned              # Top critics by vector similarity
+lastfm critics aligned --drift      # Show alignment trends over time
+lastfm critics list -v              # Show + sort by vector similarity
+lastfm critics unheard -V           # Vector-weighted recommendations with score
 ```
 
-**Unlocks**: More nuanced critic matching, drift detection, better-weighted recommendations.
+**Key insight**: Vector similarity captures taste *patterns*, not just album overlap. A critic can have high vector similarity even with few shared albums if they consistently pick similar artists.
 
 ---
 
-### Phase B: Evaluation Harness (1-2 sessions)
+### Phase B: Evaluation Harness ✅ COMPLETE
 
 Add lightweight validation to prove improvements before/after model changes.
 
-```
-├── Future holdout test
-│   Train embeddings on history up to year Y
-│   Measure if nearest-neighbors predict Y+1 discoveries
-├── Critic follow-through test
-│   From aligned critics' past unheard picks
-│   How many did you later play 10+ times?
-└── Baseline current SVD embeddings
-    Run tests, record metrics for comparison
+**Implemented:**
+- ✅ `evaluation.py` module with holdout and follow-through tests
+- ✅ Time-bounded critics embeddings (avoids leakage from future years)
+- ✅ NDCG@K ranking quality metrics at multiple K values
+- ✅ Hits@K at multiple play thresholds (1+, 5+, 10+, 50+)
+- ✅ Coverage metrics (unique artists, concentration)
+- ✅ Novelty metrics (popularity ratio)
+- ✅ `eval holdout` - tests if critics-space neighbors predict discoveries
+- ✅ `eval followthrough` - comprehensive ranking evaluation
+- ✅ `eval baseline` - saves all metrics for comparison
+- ✅ `eval compare` - compare saved baselines
+
+**New CLI:**
+```bash
+lastfm eval holdout                 # Test discovery prediction
+lastfm eval followthrough           # Comprehensive ranking evaluation
+lastfm eval baseline --desc "..."   # Save full evaluation
+lastfm eval compare                 # Compare baselines
 ```
 
-**Unlocks**: Principled model selection, evidence for changes.
+**Evaluation Philosophy:**
+
+The colleague feedback shaped our evaluation approach:
+
+1. **Follow-through is the north star metric.** "Did you end up listening to what was recommended?" directly measures recommendation quality. Discovery prediction is structurally limited (user embeddings can only contain already-played artists).
+
+2. **Time-bounded evaluation prevents leakage.** When testing "would 2022 embeddings predict 2023-2024 discoveries?", we build critics embeddings using only 2011-2022 data. This is honest evaluation.
+
+3. **Multiple K values reveal different stories.** NDCG@10 tests precision (are the best recommendations at the top?). NDCG@100 tests deeper list quality. We evaluate at K=10, 20, 50, 100.
+
+4. **Multiple "like" thresholds capture nuance:**
+   - 1+ plays = tried it at all
+   - 5+ plays = gave it a chance
+   - 10+ plays = became a favorite
+   - 50+ plays = really loved it
+
+5. **Coverage and novelty prevent degenerate solutions.** A recommender that only suggests the same 5 popular artists would score poorly on coverage (unique artists) and novelty (popularity ratio).
+
+**Metrics Explained:**
+
+| Metric | What It Measures | Good Value |
+|--------|------------------|------------|
+| NDCG@K | Ranking quality (are hits at the top?) | Higher is better (1.0 = perfect) |
+| Hits@K | Count of items meeting threshold in top K | More is better |
+| Coverage | Unique artists in top K | Higher = more diverse |
+| Top10 Concentration | % of score from top 10 items | Lower = less "winner take all" |
+| Popularity Ratio | Mean score of topK / all | <1 = surfacing hidden gems |
+
+**Baseline Results (Phase B complete):**
+```
+Holdout Test (train: 2005-2022, test: 2023-2024, 826 discoveries):
+  User embeddings:   2 predicted (2.0x lift) - but can only find artists you've played
+  Critics embeddings: 85 predicted (0.9x lift) - covers new artists but not predictive
+
+Follow-through (2020 recommendations → 2021-2024 plays):
+  Conversion: 4.4% tried, 1.1% gave chance (5+), 0.8% favorites (10+), 0% loved (50+)
+
+  Ranking (NDCG@K):
+    @10:  Count=0.580  Vector=0.580  (essentially tied)
+    @100: Count=0.564  Vector=0.561  (essentially tied)
+
+  Hits@K (10+ threshold):
+    Top 20:  Count=2, Vector=2
+    Top 100: Count=2, Vector=2
+
+  Coverage at K=50:
+    Both: 48 unique artists, ~14% top10 concentration
+    Popularity ratio: ~8-9x (both favor popular items)
+```
+
+**Key Insights:**
+
+1. **User embeddings can't predict discoveries** (by definition, you haven't played them). They're useful for similarity within your library, not for expanding it.
+
+2. **Critics embeddings CAN surface new artists** but the 0.9x lift means they don't particularly predict what YOU will discover—they predict what's critically acclaimed.
+
+3. **Vector weighting ≈ Count weighting** for this user. Both methods are essentially tied on all metrics. This might differ for users with more niche taste.
+
+4. **Follow-through is the real test.** Only 0.8% of 2020 recommendations became 2024 favorites. This is the number to improve.
+
+5. **Coverage is not a problem.** Both methods recommend diverse artists (48 unique in top 50). The challenge is ranking quality, not diversity.
 
 ---
 
-### Phase C: Continuous Familiarity (1-2 sessions)
+### Phase C: Continuous Familiarity ✅ COMPLETE
 
 Replace binary 5x5 with smooth album familiarity scoring.
 
-```
-├── Design familiarity scoring function
-│   f(unique_tracks, total_plays, play_dispersion, recency) → 0.0-1.0
-├── Replace get_albums_listened_to() with get_album_familiarity()
-│   Returns dict of (artist, album) → familiarity score
-├── Add --familiarity-threshold flag to relevant commands
-│   critics matched --familiarity 0.6
-│   critics taste-gaps --familiarity 0.2
-└── Keep 5x5 as default threshold (familiarity ≥ 0.6)
-    Backwards compatible, but now configurable
+**Implemented:**
+- ✅ `get_album_familiarity()` in `data.py` - returns continuous 0-1 scores
+- ✅ `get_albums_by_familiarity()` - drop-in replacement for `get_albums_listened_to()`
+- ✅ `--familiarity` flag on `critics matched` and `critics unheard`
+- ✅ `--familiarity` flag on `eval followthrough`
+- ✅ Backwards compatible (default uses 5x5 binary rule)
+
+**Familiarity Scoring Formula:**
+```python
+familiarity = 0.4 * coverage + 0.4 * depth + 0.2 * dispersion
+
+Where:
+- coverage = min(unique_tracks / 10, 1.0)  # Full credit at 10+ tracks
+- depth = min(avg_plays_per_track / 10, 1.0)  # Full credit at 10 avg plays
+- dispersion = normalized_entropy(track_plays)  # How evenly distributed
 ```
 
-**Unlocks**: Nuanced album states, better taste-gap detection, configurable thresholds.
+**New CLI:**
+```bash
+lastfm critics matched --familiarity 0.5    # More albums count as "heard"
+lastfm critics unheard --familiarity 0.3    # Stricter "unheard" definition
+lastfm eval followthrough -f 0.6            # Evaluate with familiarity threshold
+```
+
+**Evaluation Results:**
+
+| Threshold | Albums Heard | Unheard Recs | Tried | Favorites | NDCG@10 |
+|-----------|-------------|--------------|-------|-----------|---------|
+| 5x5 binary| 317 | 1,136 | 4.4% | 0.8% | **0.580** |
+| Fam 0.6 | 1,562 | 1,116 | 3.9% | 0.6% | **0.631** |
+| Fam 0.4 | 3,391 | 1,104 | 3.6% | 0.5% | **0.631** |
+
+**Key Finding**: NDCG improves from 0.58 → 0.63 (+9%) with familiarity scoring!
+
+The ranking quality improvement happens because familiarity correctly identifies "truly unheard" albums vs ones you've already sampled and rejected. With binary 5x5, some "unheard" recommendations were albums you'd already tried (just not deeply) - you never "tried" them in follow-up because you'd already decided they weren't for you.
+
+**Recommendation**: Use `--familiarity 0.4` for discovery commands to get more accurate "unheard" lists.
 
 ---
 
@@ -1126,8 +1221,10 @@ Each phase is independently valuable, but later phases benefit from earlier ones
 | `crawler.py` | yearendlists.com web scraper |
 | `lastfm_api.py` | Last.fm API client |
 | `spotify.py` | Spotify playlist integration |
+| `evaluation.py` | Holdout and follow-through evaluation |
 | `commands/listen.py` | Listening analysis commands |
 | `commands/critics.py` | Critic cross-reference commands |
 | `commands/history.py` | Long-term pattern analysis |
 | `commands/metadata.py` | MusicBrainz enrichment commands |
+| `commands/eval.py` | Evaluation CLI commands |
 | `commands/visualize.py` | Calendar + genome visualizations |

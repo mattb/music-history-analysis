@@ -8,7 +8,7 @@ import httpx
 import webbrowser
 
 from . import data, lastfm_api
-from .commands import listen, critics, history, metadata, spotify, visualize
+from .commands import listen, critics, history, metadata, spotify, visualize, eval
 
 app = typer.Typer(
     help="Analyze your Last.fm listening history.",
@@ -46,12 +46,15 @@ def main(
         help="Filter to specific year"),
     verbose: bool = typer.Option(False, "--verbose", "-v",
         help="Verbose output"),
+    familiarity: float = typer.Option(0.4, "--familiarity", "-f",
+        help="Album familiarity threshold (0-1). Default 0.4 replaces old binary 5x5 rule."),
 ):
     """Analyze your Last.fm listening history."""
     ctx.ensure_object(dict)
     ctx.obj["csv"] = csv
     ctx.obj["year"] = year
     ctx.obj["verbose"] = verbose
+    ctx.obj["familiarity"] = familiarity
 
 
 # Register command groups
@@ -61,6 +64,7 @@ app.add_typer(history.app, name="history", help="Long-term taste evolution")
 app.add_typer(metadata.app, name="metadata", help="MusicBrainz metadata enrichment")
 app.add_typer(spotify.app, name="spotify", help="Spotify integration")
 app.add_typer(visualize.app, name="visualize", help="Generate visual representations")
+app.add_typer(eval.app, name="eval", help="Evaluate embedding and recommendation quality")
 
 
 # Root-level commands (most common operations)
@@ -191,6 +195,7 @@ def artist(
     from rich.table import Table
 
     csv = ctx.obj.get("csv") if ctx.obj else None
+    fam = ctx.obj.get("familiarity") if ctx.obj else None
 
     df = data.load_scrobbles(get_csv_path(csv))
 
@@ -311,8 +316,8 @@ def artist(
     if critics_by_year:
         console.print(f"\n[bold green]Your Taste vs Critics[/bold green]")
 
-        # Check which critic-selected albums you've listened to (5+ tracks, 5+ plays each)
-        listened_albums = data.get_albums_listened_to(matches)
+        # Check which critic-selected albums you've listened to
+        listened_albums = data.get_listened_albums(matches, min_familiarity=fam)
         # Extract just the album names for this artist
         your_albums = set(
             crossref.normalize_for_matching(album)
@@ -408,6 +413,7 @@ def overview(
     from rich.table import Table
 
     csv = ctx.obj.get("csv") if ctx.obj else None
+    fam = ctx.obj.get("familiarity") if ctx.obj else None
 
     df_full = data.load_scrobbles(get_csv_path(csv))
 
@@ -526,8 +532,8 @@ def overview(
                 pass
 
     if all_critics_data:
-        # Build set of your albums (albums properly listened to: 5+ tracks, 5+ plays each)
-        listened_albums = data.get_albums_listened_to(df_full)
+        # Build set of your albums
+        listened_albums = data.get_listened_albums(df_full, min_familiarity=fam)
         your_albums = set()
         your_albums_with_plays = {}
 
@@ -932,6 +938,7 @@ def review(
     csv = ctx.obj.get("csv") if ctx.obj else None
     year = ctx.obj.get("year") if ctx.obj else None
     year = year if year is not None else 2025
+    fam = ctx.obj.get("familiarity") if ctx.obj else None
 
     df_full = data.load_scrobbles(get_csv_path(csv))
     df = data.filter_by_year(df_full, year)
@@ -1034,8 +1041,8 @@ def review(
                 raw_critics = json.load(f)
             critics_available = True
 
-            # Build your albums set (albums properly listened to: 5+ tracks, 5+ plays each)
-            listened_albums = data.get_albums_listened_to(df)
+            # Build your albums set
+            listened_albums = data.get_listened_albums(df, min_familiarity=fam)
             your_albums = set()
             for artist, album in listened_albums:
                 key = (crossref.normalize_for_matching(artist),
@@ -1043,7 +1050,7 @@ def review(
                 your_albums.add(key)
 
             # Match with critics
-            results = crossref.match_with_history(critics_data, df_full, year=year)
+            results = crossref.match_with_history(critics_data, df_full, year=year, min_familiarity=fam)
             your_overlap_pct = (results["stats"]["matched_count"] /
                                results["stats"]["total_critics_albums"] * 100)
 

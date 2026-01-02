@@ -426,18 +426,20 @@ class CriticsEmbeddings:
         years: Optional[List[int]] = None,
         n_components: int = 50,
         min_critics: int = 2,
+        use_rank_weights: bool = True,
     ) -> None:
         """Build embeddings from critics' co-listing patterns.
 
         For each critic's list, all artists on that list are considered
-        to co-occur. The co-occurrence count is the number of times two
-        artists appear on the same critic's list across all years.
+        to co-occur. The co-occurrence weight depends on rank position.
 
         Args:
             critics_loader: Function that takes a year and returns critics data dict
             years: Years to include (default: 2011-2025)
             n_components: Number of embedding dimensions
             min_critics: Minimum critics listing an artist to be included
+            use_rank_weights: Weight co-occurrences by rank (default: True)
+                #1 pick contributes more than #50
         """
         from . import crossref
 
@@ -445,6 +447,8 @@ class CriticsEmbeddings:
             years = list(range(2011, 2026))
 
         print(f"Building critics embeddings from {len(years)} years of data...")
+        if use_rank_weights:
+            print(f"  Using rank weighting: weight = 1 / log2(rank + 1)")
 
         # First pass: collect all artists and their critics
         artist_critics: Dict[str, set] = {}  # normalized_artist -> set of (critic, year)
@@ -487,7 +491,7 @@ class CriticsEmbeddings:
         self.artist_to_idx = {a: i for i, a in enumerate(valid_artists)}
         self.idx_to_artist = {i: a for a, i in self.artist_to_idx.items()}
 
-        # Second pass: build co-occurrence matrix
+        # Second pass: build co-occurrence matrix with rank weighting
         print(f"  Building co-listing matrix...")
         n = len(valid_artists)
         matrix = np.zeros((n, n), dtype=np.float32)
@@ -498,19 +502,34 @@ class CriticsEmbeddings:
                 raw = data.get("raw", data)
 
                 for lst in raw:
-                    # Get all valid artists on this single list
-                    list_artists = set()
+                    # Get all valid artists on this list with their ranks and weights
+                    list_entries = []  # [(norm_artist, weight), ...]
+                    list_length = len(lst.get("albums", []))
+
                     for album in lst.get("albums", []):
                         artist = album.get("artist", "")
+                        rank = album.get("rank", 50)  # Default to 50 if no rank
+
                         if artist:
                             norm_artist = crossref.normalize_for_matching(artist)
                             if norm_artist in self.artist_to_idx:
-                                list_artists.add(norm_artist)
+                                if use_rank_weights:
+                                    # Weight by reciprocal log of rank
+                                    # #1 → 1.0, #2 → 0.63, #10 → 0.30, #50 → 0.18
+                                    weight = 1.0 / np.log2(rank + 1)
+                                    # Also normalize by list length (10-item list #1 > 100-item list #1)
+                                    length_factor = 1.0 / np.log2(list_length + 1)
+                                    weight *= length_factor
+                                else:
+                                    weight = 1.0
+                                list_entries.append((norm_artist, weight))
 
                     # Increment co-occurrence for all pairs on this list
-                    for a1 in list_artists:
-                        for a2 in list_artists:
-                            matrix[self.artist_to_idx[a1], self.artist_to_idx[a2]] += 1
+                    # Weight is the product of individual weights (geometric mean style)
+                    for a1, w1 in list_entries:
+                        for a2, w2 in list_entries:
+                            pair_weight = np.sqrt(w1 * w2)  # Geometric mean of weights
+                            matrix[self.artist_to_idx[a1], self.artist_to_idx[a2]] += pair_weight
             except (IOError, json.JSONDecodeError, KeyError):
                 continue
 
@@ -685,12 +704,17 @@ class CriticsEmbeddings:
 def get_or_build_critics_embeddings(
     force_rebuild: bool = False,
     min_critics: int = 2,
+    use_rank_weights: bool = True,
+    max_year: Optional[int] = None,
 ) -> CriticsEmbeddings:
     """Get or build critics embeddings.
 
     Args:
         force_rebuild: Force rebuild even if cached
         min_critics: Minimum critics for an artist to be included
+        use_rank_weights: Weight co-occurrences by rank position
+        max_year: Maximum year to include (for time-bounded holdout evaluation)
+                  If None, uses all years (2011-2025)
 
     Returns:
         CriticsEmbeddings instance
@@ -708,7 +732,17 @@ def get_or_build_critics_embeddings(
             return {"raw": json.load(f)}
 
     embeddings = CriticsEmbeddings()
-    cache_name = f"critics_embeddings_2011-2025_min{min_critics}"
+    rank_suffix = "_ranked" if use_rank_weights else ""
+
+    # Determine year range
+    if max_year is None:
+        years = list(range(2011, 2026))
+        year_range = "2011-2025"
+    else:
+        years = list(range(2011, max_year + 1))
+        year_range = f"2011-{max_year}"
+
+    cache_name = f"critics_embeddings_{year_range}_min{min_critics}{rank_suffix}"
 
     if not force_rebuild and embeddings.load(cache_name=cache_name):
         return embeddings
@@ -716,10 +750,288 @@ def get_or_build_critics_embeddings(
     # Build from scratch
     embeddings.build_from_critics_data(
         critics_loader=critics_loader,
-        years=list(range(2011, 2026)),
+        years=years,
         n_components=50,
         min_critics=min_critics,
+        use_rank_weights=use_rank_weights,
     )
     embeddings.save(cache_name=cache_name)
 
     return embeddings
+
+
+class CriticVectorEmbeddings:
+    """Embed critics as vectors in the same space as artists.
+
+    Each critic is represented by the weighted average of their picked artists'
+    embeddings. This enables:
+    - Finding critics most similar to your taste-vector
+    - Tracking critic drift over time
+    - Weighting recommendations by critic-to-user similarity
+    """
+
+    def __init__(self, artist_embeddings: CriticsEmbeddings):
+        """Initialize with artist embeddings in critics-space.
+
+        Args:
+            artist_embeddings: CriticsEmbeddings instance with built embeddings
+        """
+        self.artist_embeddings = artist_embeddings
+        self.critic_vectors: Dict[str, np.ndarray] = {}
+        self.critic_metadata: Dict[str, dict] = {}  # critic -> {years, album_count, ...}
+        self.yearly_vectors: Dict[str, Dict[int, np.ndarray]] = {}  # critic -> {year -> vector}
+
+    def build_from_critics_data(
+        self,
+        critics_loader,  # Callable[[int], dict]
+        years: Optional[List[int]] = None,
+    ) -> None:
+        """Build critic vectors from their list picks.
+
+        Each critic's vector is the rank-weighted average of their picked artists.
+        Also builds per-year vectors for drift detection.
+
+        Args:
+            critics_loader: Function that takes a year and returns critics data
+            years: Years to include (default: 2011-2025)
+        """
+        from . import crossref
+
+        if years is None:
+            years = list(range(2011, 2026))
+
+        if self.artist_embeddings.embeddings is None:
+            raise ValueError("Artist embeddings must be built first")
+
+        print(f"Building critic vectors from {len(years)} years...")
+
+        # Collect all picks per critic, per year
+        critic_picks: Dict[str, Dict[int, List[Tuple[str, float]]]] = {}
+        # critic -> year -> [(norm_artist, weight), ...]
+
+        for year in years:
+            try:
+                data = critics_loader(year)
+                raw = data.get("raw", data)
+
+                for lst in raw:
+                    critic = lst.get("critic", "unknown")
+                    if critic not in critic_picks:
+                        critic_picks[critic] = {}
+                    if year not in critic_picks[critic]:
+                        critic_picks[critic][year] = []
+
+                    list_length = len(lst.get("albums", []))
+
+                    for album in lst.get("albums", []):
+                        artist = album.get("artist", "")
+                        rank = album.get("rank", 50)
+
+                        if artist:
+                            norm_artist = crossref.normalize_for_matching(artist)
+                            # Only include artists we have embeddings for
+                            if norm_artist in self.artist_embeddings.artist_to_idx:
+                                # Rank weight: #1 → 1.0, #10 → 0.30, #50 → 0.18
+                                weight = 1.0 / np.log2(rank + 1)
+                                # List length normalization
+                                weight *= 1.0 / np.log2(list_length + 1)
+                                critic_picks[critic][year].append((norm_artist, weight))
+            except (IOError, json.JSONDecodeError, KeyError):
+                continue
+
+        # Build vectors for each critic
+        n_dims = self.artist_embeddings.embeddings.shape[1]
+
+        for critic, years_picks in critic_picks.items():
+            # Aggregate across all years for overall vector
+            all_picks: List[Tuple[str, float]] = []
+            yearly_vectors: Dict[int, np.ndarray] = {}
+
+            for year, picks in years_picks.items():
+                all_picks.extend(picks)
+
+                # Build per-year vector
+                if picks:
+                    year_vector = self._weighted_average_vector(picks)
+                    if year_vector is not None:
+                        yearly_vectors[year] = year_vector
+
+            if all_picks:
+                overall_vector = self._weighted_average_vector(all_picks)
+                if overall_vector is not None:
+                    self.critic_vectors[critic] = overall_vector
+                    self.yearly_vectors[critic] = yearly_vectors
+                    self.critic_metadata[critic] = {
+                        "years": sorted(years_picks.keys()),
+                        "album_count": len(all_picks),
+                        "year_count": len(years_picks),
+                    }
+
+        print(f"  Built vectors for {len(self.critic_vectors)} critics")
+        print(f"  Critics with multi-year data: {sum(1 for m in self.critic_metadata.values() if m['year_count'] > 1)}")
+
+    def _weighted_average_vector(
+        self,
+        picks: List[Tuple[str, float]],
+    ) -> Optional[np.ndarray]:
+        """Compute weighted average of artist vectors."""
+        if not picks:
+            return None
+
+        vectors = []
+        weights = []
+
+        for norm_artist, weight in picks:
+            vec = self.artist_embeddings.get_embedding(norm_artist)
+            if vec is not None:
+                vectors.append(vec)
+                weights.append(weight)
+
+        if not vectors:
+            return None
+
+        vectors = np.array(vectors)
+        weights = np.array(weights)
+        weights = weights / weights.sum()  # Normalize weights
+
+        avg_vector = np.average(vectors, axis=0, weights=weights)
+        # L2 normalize for cosine similarity
+        avg_vector = avg_vector / np.linalg.norm(avg_vector)
+
+        return avg_vector
+
+    def find_similar_critics(
+        self,
+        user_vector: np.ndarray,
+        top_n: int = 20,
+    ) -> List[Tuple[str, float, dict]]:
+        """Find critics most similar to a user's taste vector.
+
+        Args:
+            user_vector: User's taste vector (same dimensionality as critic vectors)
+            top_n: Number of critics to return
+
+        Returns:
+            List of (critic_name, similarity, metadata) tuples
+        """
+        if not self.critic_vectors:
+            raise ValueError("Critic vectors not built yet")
+
+        # Normalize user vector
+        user_vector = user_vector / np.linalg.norm(user_vector)
+
+        similarities = []
+        for critic, vector in self.critic_vectors.items():
+            sim = np.dot(user_vector, vector)
+            similarities.append((critic, float(sim), self.critic_metadata[critic]))
+
+        # Sort by similarity descending
+        similarities.sort(key=lambda x: -x[1])
+
+        return similarities[:top_n]
+
+    def compute_user_vector(
+        self,
+        df: "pd.DataFrame",
+        top_n_artists: int = 100,
+    ) -> np.ndarray:
+        """Compute a user's taste vector from their listening history.
+
+        The user vector is the play-weighted average of their top artists'
+        embeddings in critics-space.
+
+        Args:
+            df: DataFrame with scrobble data
+            top_n_artists: Number of top artists to use
+
+        Returns:
+            User's taste vector
+        """
+        from . import crossref
+
+        # Get top artists by play count
+        artist_plays = df.groupby("artist").size().sort_values(ascending=False)
+        top_artists = artist_plays.head(top_n_artists)
+
+        vectors = []
+        weights = []
+
+        for artist, plays in top_artists.items():
+            norm_artist = crossref.normalize_for_matching(artist)
+            vec = self.artist_embeddings.get_embedding(norm_artist)
+            if vec is not None:
+                vectors.append(vec)
+                # Log-scale plays to avoid extreme weights
+                weights.append(np.log1p(plays))
+
+        if not vectors:
+            raise ValueError("No artists found in critics embeddings")
+
+        vectors = np.array(vectors)
+        weights = np.array(weights)
+        weights = weights / weights.sum()
+
+        user_vector = np.average(vectors, axis=0, weights=weights)
+        user_vector = user_vector / np.linalg.norm(user_vector)
+
+        return user_vector
+
+    def detect_critic_drift(
+        self,
+        critic: str,
+        user_vector: np.ndarray,
+    ) -> List[Tuple[int, float]]:
+        """Detect how a critic's alignment with you has changed over time.
+
+        Args:
+            critic: Critic name
+            user_vector: Your taste vector
+
+        Returns:
+            List of (year, similarity) tuples showing alignment over time
+        """
+        if critic not in self.yearly_vectors:
+            return []
+
+        user_vector = user_vector / np.linalg.norm(user_vector)
+
+        drift = []
+        for year, vector in sorted(self.yearly_vectors[critic].items()):
+            sim = float(np.dot(user_vector, vector))
+            drift.append((year, sim))
+
+        return drift
+
+    def get_critic_vector(self, critic: str) -> Optional[np.ndarray]:
+        """Get a critic's taste vector."""
+        return self.critic_vectors.get(critic)
+
+
+def get_or_build_critic_vectors(
+    force_rebuild: bool = False,
+) -> CriticVectorEmbeddings:
+    """Get or build critic vector embeddings.
+
+    Args:
+        force_rebuild: Force rebuild even if cached
+
+    Returns:
+        CriticVectorEmbeddings instance
+    """
+    import json
+    from pathlib import Path
+
+    # First get/build the artist embeddings
+    artist_emb = get_or_build_critics_embeddings(force_rebuild=force_rebuild)
+
+    def critics_loader(year: int) -> dict:
+        json_path = Path(__file__).parent.parent / f"critics-{year}.json"
+        if not json_path.exists():
+            raise IOError(f"No critics data for {year}")
+        with open(json_path) as f:
+            return {"raw": json.load(f)}
+
+    critic_vectors = CriticVectorEmbeddings(artist_emb)
+    critic_vectors.build_from_critics_data(critics_loader)
+
+    return critic_vectors

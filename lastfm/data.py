@@ -206,3 +206,149 @@ def get_albums_listened_to(
     return set(
         zip(listened_albums["artist"], listened_albums["album"])
     )
+
+
+def get_album_familiarity(
+    df: pd.DataFrame,
+    coverage_weight: float = 0.4,
+    depth_weight: float = 0.4,
+    dispersion_weight: float = 0.2,
+    max_tracks_for_coverage: int = 10,
+    max_avg_plays_for_depth: int = 10,
+) -> dict[tuple[str, str], float]:
+    """Calculate continuous familiarity score (0-1) for each album.
+
+    Replaces the binary 5x5 rule with a smooth score based on:
+    - Coverage: How many different tracks you've played (0-1)
+    - Depth: Average plays per track (0-1)
+    - Dispersion: How evenly distributed plays are across tracks (0-1)
+
+    Args:
+        df: DataFrame of scrobbles
+        coverage_weight: Weight for track coverage component (default: 0.4)
+        depth_weight: Weight for play depth component (default: 0.4)
+        dispersion_weight: Weight for play dispersion component (default: 0.2)
+        max_tracks_for_coverage: Tracks needed for full coverage score (default: 10)
+        max_avg_plays_for_depth: Avg plays/track for full depth score (default: 10)
+
+    Returns:
+        Dict mapping (artist, album) -> familiarity score (0.0 to 1.0)
+
+    Example scores:
+        - 10+ tracks, 10+ avg plays, even distribution: ~1.0
+        - 5 tracks, 5 avg plays, even distribution: ~0.5 (old 5x5 threshold)
+        - 2 tracks, 3 avg plays, uneven: ~0.2
+        - 1 track, 1 play: ~0.1
+    """
+    import numpy as np
+
+    # Filter to rows with albums
+    df_albums = df[df["album"] != ""].copy()
+
+    if df_albums.empty:
+        return {}
+
+    # Group by artist/album/track and count plays per track
+    track_plays = (
+        df_albums.groupby(["artist", "album", "track"])
+        .size()
+        .reset_index(name="plays")
+    )
+
+    # Aggregate at album level
+    album_stats = track_plays.groupby(["artist", "album"]).agg(
+        unique_tracks=("track", "count"),
+        total_plays=("plays", "sum"),
+        play_list=("plays", list),  # Keep individual track plays for dispersion
+    ).reset_index()
+
+    familiarity_scores = {}
+
+    for _, row in album_stats.iterrows():
+        artist = row["artist"]
+        album = row["album"]
+        unique_tracks = row["unique_tracks"]
+        total_plays = row["total_plays"]
+        play_list = row["play_list"]
+
+        # Component 1: Track coverage (0-1)
+        # Full credit at max_tracks_for_coverage tracks
+        coverage = min(unique_tracks / max_tracks_for_coverage, 1.0)
+
+        # Component 2: Play depth (0-1)
+        # Average plays per track, capped at max_avg_plays_for_depth
+        avg_plays = total_plays / unique_tracks if unique_tracks > 0 else 0
+        depth = min(avg_plays / max_avg_plays_for_depth, 1.0)
+
+        # Component 3: Dispersion (0-1)
+        # Use normalized entropy: how evenly distributed are plays across tracks?
+        # High entropy = even distribution = good
+        # Low entropy = concentrated on few tracks = less familiar with album as a whole
+        if unique_tracks > 1:
+            plays_array = np.array(play_list, dtype=float)
+            probs = plays_array / plays_array.sum()
+            # Shannon entropy
+            entropy = -np.sum(probs * np.log2(probs + 1e-10))
+            # Normalize by max entropy (uniform distribution)
+            max_entropy = np.log2(unique_tracks)
+            dispersion = entropy / max_entropy if max_entropy > 0 else 1.0
+        else:
+            # Only 1 track: dispersion is perfect (can't be more even)
+            dispersion = 1.0
+
+        # Combine components with weights
+        familiarity = (
+            coverage_weight * coverage +
+            depth_weight * depth +
+            dispersion_weight * dispersion
+        )
+
+        familiarity_scores[(artist, album)] = round(familiarity, 4)
+
+    return familiarity_scores
+
+
+def get_albums_by_familiarity(
+    df: pd.DataFrame,
+    min_familiarity: float = 0.5,
+    **kwargs,
+) -> set[tuple[str, str]]:
+    """Get albums meeting a minimum familiarity threshold.
+
+    Drop-in replacement for get_albums_listened_to() using continuous scoring.
+
+    Args:
+        df: DataFrame of scrobbles
+        min_familiarity: Minimum familiarity score (0-1) to count as "listened"
+                        Default 0.5 roughly corresponds to old 5x5 rule
+        **kwargs: Additional arguments passed to get_album_familiarity()
+
+    Returns:
+        Set of (artist, album) tuples meeting the threshold
+    """
+    familiarity = get_album_familiarity(df, **kwargs)
+    return {album for album, score in familiarity.items() if score >= min_familiarity}
+
+
+def get_listened_albums(
+    df: pd.DataFrame,
+    min_familiarity: float | None = None,
+) -> set[tuple[str, str]]:
+    """Get albums you've listened to, using either binary or familiarity scoring.
+
+    This is the recommended function for commands to use. It checks if a
+    familiarity threshold is provided and uses the appropriate method.
+
+    Args:
+        df: DataFrame of scrobbles
+        min_familiarity: If provided, use continuous familiarity scoring.
+                        If None, use binary 5x5 rule.
+                        Recommended value: 0.4
+
+    Returns:
+        Set of (artist, album) tuples that count as "listened to"
+    """
+    if min_familiarity is not None:
+        return get_albums_by_familiarity(df, min_familiarity=min_familiarity)
+    else:
+        return get_albums_listened_to(df)

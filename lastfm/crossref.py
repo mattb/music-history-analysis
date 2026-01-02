@@ -144,8 +144,17 @@ def match_with_history(
     critics_data: dict,
     scrobbles_df: pd.DataFrame,
     year: int = 2025,
+    min_familiarity: float | None = None,
 ) -> dict:
     """Match critics' picks against listening history.
+
+    Args:
+        critics_data: Parsed critics data from parse_critics_data()
+        scrobbles_df: DataFrame of scrobbles
+        year: Year to filter scrobbles to
+        min_familiarity: If provided, use continuous familiarity scoring (0-1)
+                        instead of binary 5x5 rule. Default None uses 5x5.
+                        Suggested values: 0.6 (strict), 0.4 (moderate), 0.2 (loose)
 
     Returns dict with:
     - matched: Albums you've listened to that critics listed
@@ -157,8 +166,8 @@ def match_with_history(
     # Filter scrobbles to year
     df = scrobbles_df[scrobbles_df['year'] == year].copy()
 
-    # Get albums you've properly listened to (5+ tracks, 5+ plays each)
-    listened_albums = data.get_albums_listened_to(df)
+    # Get albums you've listened to
+    listened_albums = data.get_listened_albums(df, min_familiarity=min_familiarity)
 
     # Normalize the listened albums for matching with critics
     your_albums = set()

@@ -156,11 +156,14 @@ def critics_fetch(
 def critics_matched(
     ctx: typer.Context,
     limit: int = typer.Option(30, "--limit", "-n", help="Number of results"),
+    familiarity: float = typer.Option(None, "--familiarity", "-f",
+        help="Use continuous familiarity scoring (0-1) instead of 5x5 rule. Try 0.4-0.6."),
 ):
     """Show critic-loved albums you've listened to (across all years or filter by --year)."""
-    # Get global options from context
+    # Get global options from context (local flag overrides global)
     csv = ctx.obj.get("csv") if ctx.obj else None
     year = ctx.obj.get("year") if ctx.obj else None
+    fam = familiarity if familiarity is not None else (ctx.obj.get("familiarity") if ctx.obj else None)
 
     df = data.load_scrobbles(get_csv_path(csv))
 
@@ -173,8 +176,10 @@ def critics_matched(
             if get_critics_path(y).exists():
                 years_to_search.append(y)
 
-    # Build your albums set (albums properly listened to: 5+ tracks, 5+ plays each)
-    listened_albums = data.get_albums_listened_to(df)
+    # Build your albums set
+    listened_albums = data.get_listened_albums(df, min_familiarity=fam)
+    if fam is not None:
+        console.print(f"[dim]Using familiarity threshold: {fam} ({len(listened_albums)} albums)[/dim]")
     your_albums_set = set()
     for artist, album in listened_albums:
         key = (crossref.normalize_for_matching(artist),
@@ -265,13 +270,17 @@ def critics_unheard(
     limit: int = typer.Option(30, "--limit", "-n", help="Number of results"),
     known_artists: bool = typer.Option(False, "--known", "-k", help="Only show artists you've heard"),
     weighted: bool = typer.Option(False, "--weighted", "-w", help="Weight by critic overlap with your taste"),
+    vector_weighted: bool = typer.Option(False, "--vector-weighted", "-V", help="Weight by critic vector similarity (more nuanced)"),
     diverse: bool = typer.Option(False, "--diverse", "-d", help="Diversify recommendations (avoid same artist/genre repetition)"),
     show_similar: bool = typer.Option(False, "--show-similar", "-s", help="Show which of your artists are similar (uses critics embeddings)"),
+    familiarity: float = typer.Option(None, "--familiarity", "-f",
+        help="Use continuous familiarity scoring (0-1) instead of 5x5 rule. Lower = more 'unheard'."),
 ):
     """Show highly-rated albums you haven't listened to (across all years or filter by --year)."""
-    # Get global options from context
+    # Get global options from context (local flag overrides global)
     csv = ctx.obj.get("csv") if ctx.obj else None
     year = ctx.obj.get("year") if ctx.obj else None
+    fam = familiarity if familiarity is not None else (ctx.obj.get("familiarity") if ctx.obj else None)
 
     df = data.load_scrobbles(get_csv_path(csv))
 
@@ -284,8 +293,10 @@ def critics_unheard(
             if get_critics_path(y).exists():
                 years_to_search.append(y)
 
-    # Build set of your albums (albums properly listened to: 5+ tracks, 5+ plays each)
-    listened_albums = data.get_albums_listened_to(df)
+    # Build set of your albums
+    listened_albums = data.get_listened_albums(df, min_familiarity=fam)
+    if fam is not None:
+        console.print(f"[dim]Using familiarity threshold: {fam} ({len(listened_albums)} albums count as 'heard')[/dim]")
     your_albums = set()
     for artist, album in listened_albums:
         key = (crossref.normalize_for_matching(artist),
@@ -306,7 +317,7 @@ def critics_unheard(
     for y in years_to_search:
         try:
             critics_data = crossref.load_critics_data(get_critics_path(y))
-            results = crossref.match_with_history(critics_data, df, year=y)
+            results = crossref.match_with_history(critics_data, df, year=y, min_familiarity=fam)
 
             for u in results['unheard']:
                 key = (crossref.normalize_for_matching(u['artist']),
@@ -368,6 +379,28 @@ def critics_unheard(
             u['weighted_score'] = sum(critic_weights.get(c, 0) for c in u.get('critics', []))
 
         unheard_list = sorted(unheard_list, key=lambda x: (-x['weighted_score'], -x['critics_count']))
+    elif vector_weighted:
+        # Weight by critic vector similarity - uses embeddings for more nuanced matching
+        from .. import embeddings
+
+        console.print("[dim]Loading critic vector embeddings for scoring...[/dim]")
+        try:
+            critic_vectors = embeddings.get_or_build_critic_vectors()
+            user_vector = critic_vectors.compute_user_vector(df, top_n_artists=100)
+
+            # Get all critic similarities
+            all_similar = critic_vectors.find_similar_critics(user_vector, top_n=500)
+            vector_similarities = {c: sim for c, sim, _ in all_similar}
+
+            # Apply vector-weighted scoring: sum of critic vector similarities
+            for u in unheard_list:
+                u['weighted_score'] = sum(vector_similarities.get(c, 0) for c in u.get('critics', []))
+
+            unheard_list = sorted(unheard_list, key=lambda x: (-x['weighted_score'], -x['critics_count']))
+        except Exception as e:
+            console.print(f"[yellow]Could not load vector embeddings: {e}[/yellow]")
+            console.print("[yellow]Falling back to critics count sorting[/yellow]")
+            unheard_list = sorted(unheard_list, key=lambda x: -x['critics_count'])
     else:
         unheard_list = sorted(unheard_list, key=lambda x: -x['critics_count'])
 
@@ -436,14 +469,19 @@ def critics_unheard(
 
     console.print(f"\n[bold cyan]{title}[/bold cyan]\n")
 
+    # Determine if we're showing weighted scores
+    show_score = weighted or vector_weighted
+
     table = Table(show_header=True)
     table.add_column("#", justify="right", style="dim", width=3)
     table.add_column("Artist", style="cyan")
     table.add_column("Album", style="yellow")
+    if show_score:
+        table.add_column("Score", justify="right", style="magenta")
     table.add_column("Critics", justify="right", style="green")
     if show_similar:
         table.add_column("Similar to", style="magenta")
-    else:
+    elif not show_score:
         table.add_column("Artist Plays", justify="right", style="dim")
     if year is None:
         table.add_column("Years", style="dim")
@@ -452,31 +490,35 @@ def critics_unheard(
         years_str = ", ".join(map(str, sorted(u['years']))) if year is None else None
         rec_artist_norm = crossref.normalize_for_matching(u['artist'])
 
+        # Build row data
+        row = [str(i), u['artist'], u['album'][:35] + "..." if len(u['album']) > 35 else u['album']]
+
+        if show_score:
+            score = u.get('weighted_score', 0)
+            row.append(f"{score:.2f}")
+
+        row.append(str(u['critics_count']))
+
         if show_similar:
             similar_artists = similarity_lookup.get(rec_artist_norm, [])
             similar_str = ", ".join([a for a, _ in similar_artists]) if similar_artists else "-"
-        else:
-            similar_str = str(u['artist_plays']) if u['artist_plays'] else "-"
+            row.append(similar_str)
+        elif not show_score:
+            row.append(str(u['artist_plays']) if u['artist_plays'] else "-")
 
         if year is None:
-            table.add_row(
-                str(i),
-                u['artist'],
-                u['album'][:35] + "..." if len(u['album']) > 35 else u['album'],
-                str(u['critics_count']),
-                similar_str,
-                years_str,
-            )
-        else:
-            table.add_row(
-                str(i),
-                u['artist'],
-                u['album'][:35] + "..." if len(u['album']) > 35 else u['album'],
-                str(u['critics_count']),
-                similar_str,
-            )
+            row.append(years_str)
+
+        table.add_row(*row)
 
     console.print(table)
+
+    # Explain score if showing it
+    if show_score:
+        if vector_weighted:
+            console.print("\n[dim]Score = sum of recommending critics' vector similarities to your taste[/dim]")
+        else:
+            console.print("\n[dim]Score = sum of recommending critics' overlap percentages with your listening[/dim]")
 
 
 @app.command(name="overlap")
@@ -536,13 +578,15 @@ def critics_overlap(
 @app.command(name="list")
 def critics_list(
     ctx: typer.Context,
-    sort: str = typer.Option("overlap", "--sort", "-s", help="Sort by: overlap, albums, name"),
+    sort: str = typer.Option(None, "--sort", "-s", help="Sort by: overlap, albums, name, vector (default: vector if -v, else overlap)"),
+    show_vector: bool = typer.Option(False, "--vector", "-v", help="Show vector similarity and sort by it"),
 ):
     """Show overview of critics and your overlap with each."""
     # Get global options from context
     csv = ctx.obj.get("csv") if ctx.obj else None
     year = ctx.obj.get("year") if ctx.obj else None
     year = year if year is not None else 2025
+    fam = ctx.obj.get("familiarity") if ctx.obj else None
 
     # Load critics data
     json_path = get_critics_path(year)
@@ -553,13 +597,32 @@ def critics_list(
     df = data.load_scrobbles(get_csv_path(csv))
     df_year = df[df['year'] == year]
 
-    # Build set of your albums (albums properly listened to: 5+ tracks, 5+ plays each)
-    listened_albums = data.get_albums_listened_to(df_year)
+    # Build set of your albums
+    listened_albums = data.get_listened_albums(df_year, min_familiarity=fam)
+    if fam is not None:
+        console.print(f"[dim]Using familiarity threshold: {fam} ({len(listened_albums)} albums)[/dim]")
     your_albums = set()
     for artist, album in listened_albums:
         key = (crossref.normalize_for_matching(artist),
                crossref.normalize_for_matching(album))
         your_albums.add(key)
+
+    # Load vector similarity if requested
+    vector_similarities = {}
+    if show_vector or sort == "vector":
+        from .. import embeddings
+
+        console.print("[dim]Loading critic vector embeddings...[/dim]")
+        try:
+            critic_vectors = embeddings.get_or_build_critic_vectors()
+            user_vector = critic_vectors.compute_user_vector(df, top_n_artists=100)
+
+            # Get all similarities
+            all_similar = critic_vectors.find_similar_critics(user_vector, top_n=500)
+            vector_similarities = {c: sim for c, sim, _ in all_similar}
+        except Exception as e:
+            console.print(f"[yellow]Could not load vector embeddings: {e}[/yellow]")
+            show_vector = False
 
     # Calculate stats per critic
     critic_stats = []
@@ -586,15 +649,24 @@ def critics_list(
             'overlap': overlap_count,
             'overlap_pct': overlap_pct,
             'url': lst['url'],
+            'vector_sim': vector_similarities.get(critic, 0.0),
         })
+
+    # Determine sort order (default to vector if showing vector, else overlap)
+    if sort is None:
+        sort = "vector" if show_vector else "overlap"
 
     # Sort
     if sort == "overlap":
         critic_stats.sort(key=lambda x: (-x['overlap'], -x['overlap_pct']))
     elif sort == "albums":
         critic_stats.sort(key=lambda x: -x['albums'])
-    else:  # name
+    elif sort == "vector":
+        critic_stats.sort(key=lambda x: -x['vector_sim'])
+    elif sort == "name":
         critic_stats.sort(key=lambda x: x['critic'].lower())
+    else:
+        critic_stats.sort(key=lambda x: (-x['overlap'], -x['overlap_pct']))
 
     console.print(f"\n[bold magenta]═══ {year} Critics Overview ({len(critic_stats)} critics) ═══[/bold magenta]\n")
 
@@ -613,16 +685,29 @@ def critics_list(
     table.add_column("Albums", justify="right")
     table.add_column("Overlap", justify="right", style="green")
     table.add_column("%", justify="right", style="dim")
+    if show_vector:
+        table.add_column("Vector", justify="right", style="magenta")
 
     for c in critic_stats:
         overlap_str = str(c['overlap']) if c['overlap'] > 0 else "-"
         pct_str = f"{c['overlap_pct']:.0f}%" if c['overlap'] > 0 else "-"
-        table.add_row(
-            c['critic'],
-            str(c['albums']),
-            overlap_str,
-            pct_str,
-        )
+
+        if show_vector:
+            vec_str = f"{c['vector_sim']:.3f}" if c['vector_sim'] > 0 else "-"
+            table.add_row(
+                c['critic'],
+                str(c['albums']),
+                overlap_str,
+                pct_str,
+                vec_str,
+            )
+        else:
+            table.add_row(
+                c['critic'],
+                str(c['albums']),
+                overlap_str,
+                pct_str,
+            )
 
     console.print(table)
 
@@ -763,11 +848,14 @@ def critics_blind_spots(
     """
     # Get global options from context
     csv = ctx.obj.get("csv") if ctx.obj else None
+    fam = ctx.obj.get("familiarity") if ctx.obj else None
 
     df = data.load_scrobbles(get_csv_path(csv))
 
-    # Build set of all albums you've properly listened to (5+ tracks, 5+ plays each)
-    listened_albums = data.get_albums_listened_to(df)
+    # Build set of all albums you've listened to
+    listened_albums = data.get_listened_albums(df, min_familiarity=fam)
+    if fam is not None:
+        console.print(f"[dim]Using familiarity threshold: {fam} ({len(listened_albums)} albums)[/dim]")
     your_albums = set()
     your_artists = set()
     for artist, album in listened_albums:
@@ -996,6 +1084,7 @@ def critics_tracker(
     """
     # Get global options from context
     csv = ctx.obj.get("csv") if ctx.obj else None
+    fam = ctx.obj.get("familiarity") if ctx.obj else None
 
     df = data.load_scrobbles(get_csv_path(csv))
 
@@ -1015,8 +1104,10 @@ def critics_tracker(
     with open(target_path) as f:
         target_data = json.load(f)
 
-    # Build your albums set (albums properly listened to: 5+ tracks, 5+ plays each)
-    listened_albums = data.get_albums_listened_to(df)
+    # Build your albums set
+    listened_albums = data.get_listened_albums(df, min_familiarity=fam)
+    if fam is not None:
+        console.print(f"[dim]Using familiarity threshold: {fam} ({len(listened_albums)} albums)[/dim]")
     your_albums = set()
     for artist, album in listened_albums:
         your_albums.add((
@@ -1138,14 +1229,17 @@ def critics_regrets(
     """Show old critically-acclaimed albums you've been ignoring for years."""
     # Get global options from context
     csv = ctx.obj.get("csv") if ctx.obj else None
+    fam = ctx.obj.get("familiarity") if ctx.obj else None
 
     df = data.load_scrobbles(get_csv_path(csv))
 
     # Get current year
     current_year = datetime.now(timezone.utc).year
 
-    # Build set of your albums (albums properly listened to)
-    listened_albums = data.get_albums_listened_to(df)
+    # Build set of your albums
+    listened_albums = data.get_listened_albums(df, min_familiarity=fam)
+    if fam is not None:
+        console.print(f"[dim]Using familiarity threshold: {fam} ({len(listened_albums)} albums)[/dim]")
     your_albums = set()
     for artist, album in listened_albums:
         key = (crossref.normalize_for_matching(artist),
@@ -1255,6 +1349,148 @@ def critics_regrets(
     if regrets_list:
         oldest = regrets_list[0]
         console.print(f"\n[dim italic]You've been ignoring {oldest['artist']} — {oldest['album'][:40]} for {oldest['years_ago']} years! 😱[/dim italic]")
+
+
+@app.command(name="aligned")
+def critics_aligned(
+    ctx: typer.Context,
+    limit: int = typer.Option(30, "--limit", "-n", help="Number of critics to show"),
+    show_drift: bool = typer.Option(False, "--drift", "-d", help="Show alignment drift over time"),
+    min_years: int = typer.Option(1, "--min-years", help="Minimum years of data for a critic"),
+):
+    """Find critics whose taste most closely matches yours using vector embeddings.
+
+    Uses critic-as-vector embeddings where each critic is represented by the
+    weighted average of their picked artists. Your taste vector is computed
+    from your top artists, then compared to each critic's vector.
+
+    This is more nuanced than simple overlap counting - it captures
+    which critics have similar *patterns* of taste, not just shared albums.
+    """
+    from .. import embeddings
+
+    # Get global options from context
+    csv = ctx.obj.get("csv") if ctx.obj else None
+
+    console.print("\n[bold magenta]═══ ALIGNED CRITICS (Vector Similarity) ═══[/bold magenta]")
+    console.print("[dim]Critics whose taste patterns match yours[/dim]\n")
+
+    # Load data
+    csv_path = get_csv_path(csv)
+    df = data.load_scrobbles(csv_path)
+
+    # Build critic vectors
+    console.print("[dim]Loading critic vector embeddings...[/dim]")
+    try:
+        critic_vectors = embeddings.get_or_build_critic_vectors()
+    except Exception as e:
+        console.print(f"[red]Error loading critic vectors: {e}[/red]")
+        raise typer.Exit(1)
+
+    # Compute user taste vector
+    console.print("[dim]Computing your taste vector...[/dim]")
+    try:
+        user_vector = critic_vectors.compute_user_vector(df, top_n_artists=100)
+    except Exception as e:
+        console.print(f"[red]Error computing user vector: {e}[/red]")
+        raise typer.Exit(1)
+
+    # Find similar critics
+    similar = critic_vectors.find_similar_critics(user_vector, top_n=limit * 2)
+
+    # Filter by min_years
+    similar = [
+        (c, sim, meta) for c, sim, meta in similar
+        if meta.get("year_count", 1) >= min_years
+    ][:limit]
+
+    console.print(f"\n[bold cyan]Top {len(similar)} Aligned Critics[/bold cyan]")
+    if min_years > 1:
+        console.print(f"[dim](Showing critics with {min_years}+ years of data)[/dim]")
+    console.print()
+
+    if not similar:
+        console.print("[yellow]No critics found matching criteria[/yellow]")
+        raise typer.Exit(1)
+
+    # Display table
+    table = Table(show_header=True)
+    table.add_column("#", justify="right", style="dim", width=3)
+    table.add_column("Critic", style="cyan")
+    table.add_column("Similarity", justify="right", style="green")
+    table.add_column("Years", justify="right", style="dim")
+    table.add_column("Albums", justify="right", style="dim")
+    if show_drift:
+        table.add_column("Trend", style="yellow")
+
+    for i, (critic, sim, meta) in enumerate(similar, 1):
+        years_str = f"{min(meta['years'])}-{max(meta['years'])}" if len(meta['years']) > 1 else str(meta['years'][0])
+
+        # Calculate drift trend if requested
+        trend_str = ""
+        if show_drift and meta.get("year_count", 1) > 1:
+            drift = critic_vectors.detect_critic_drift(critic, user_vector)
+            if len(drift) >= 2:
+                first_sim = drift[0][1]
+                last_sim = drift[-1][1]
+                change = last_sim - first_sim
+                if change > 0.05:
+                    trend_str = f"↑ +{change:.2f}"
+                elif change < -0.05:
+                    trend_str = f"↓ {change:.2f}"
+                else:
+                    trend_str = "→"
+
+        if show_drift:
+            table.add_row(
+                str(i),
+                critic,
+                f"{sim:.3f}",
+                years_str,
+                str(meta["album_count"]),
+                trend_str,
+            )
+        else:
+            table.add_row(
+                str(i),
+                critic,
+                f"{sim:.3f}",
+                years_str,
+                str(meta["album_count"]),
+            )
+
+    console.print(table)
+
+    # Show detailed drift for top critics if requested
+    if show_drift:
+        console.print("\n[bold cyan]Alignment Timeline (Top 5)[/bold cyan]")
+        console.print("[dim]How has each critic's alignment changed?[/dim]\n")
+
+        for critic, sim, meta in similar[:5]:
+            if meta.get("year_count", 1) <= 1:
+                continue
+
+            drift = critic_vectors.detect_critic_drift(critic, user_vector)
+            if len(drift) < 2:
+                continue
+
+            # Build sparkline
+            sims = [s for _, s in drift]
+            max_sim = max(sims)
+            min_sim = min(sims)
+            range_sim = max_sim - min_sim if max_sim > min_sim else 1
+
+            blocks = " ▁▂▃▄▅▆▇█"
+            sparkline = ""
+            for _, s in drift:
+                idx = int((s - min_sim) / range_sim * 8) if range_sim > 0 else 4
+                sparkline += blocks[min(idx, 8)]
+
+            years = [str(y) for y, _ in drift]
+            year_range = f"{years[0]}-{years[-1]}"
+
+            console.print(f"  [bold]{critic}[/bold]")
+            console.print(f"    {year_range}: {sparkline} ({sims[0]:.2f} → {sims[-1]:.2f})")
 
 
 @app.command(name="taste-gaps")
