@@ -489,7 +489,6 @@ def visualize_genome(
         artist_embeddings = embeddings.build_embeddings_from_csv(
             csv_path,
             n_components=50,
-            time_window="W",
             min_plays=min_plays,  # Use the requested threshold
             method="cooccurrence",  # Use artist-to-artist co-occurrence
             force_rebuild=rebuild or force_rebuild_for_filter,

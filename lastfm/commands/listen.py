@@ -721,7 +721,6 @@ def listen_similar(
         artist_embeddings = embeddings.build_embeddings_from_csv(
             csv_path,
             n_components=50,
-            time_window="W",  # Weekly co-occurrence
             min_plays=5,
             force_rebuild=rebuild,
         )
@@ -819,7 +818,6 @@ def listen_dimensions(
             emb = embeddings.build_embeddings_from_csv(
                 csv_path,
                 n_components=50,
-                time_window="W",
                 min_plays=5,
                 force_rebuild=rebuild,
             )

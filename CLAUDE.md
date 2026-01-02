@@ -427,6 +427,58 @@ The CLI provides two comprehensive report commands:
 - Metadata breakdown for that year
 - Produces both console and HTML output
 
+## MCP Server
+
+The analysis tools are also available as an MCP (Model Context Protocol) server for LLM agents.
+
+### Running the Server
+
+```bash
+# Run with default CSV auto-detection
+python -m lastfm.mcp_server
+
+# Run with explicit CSV path
+LASTFM_CSV=/path/to/scrobbles.csv python -m lastfm.mcp_server
+```
+
+### Available Tools
+
+**Narrative Tools** (high-level "story" tools):
+- `explore_taste_evolution(start_year, end_year)` - Analyze taste evolution over time
+- `find_musical_bridges(artist, top_n)` - Find artists bridging to new discoveries
+- `discover_blind_spots(year, min_critics, limit)` - Find acclaimed unheard albums
+- `get_artist_deep_dive(artist)` - Complete analysis of relationship with an artist
+
+**Precise Tools** (direct queries):
+- `find_similar_artists(artist, source, top_n)` - Find similar artists (user or critics space)
+- `get_listening_stats(year)` - Get listening statistics
+- `get_top_artists(year, limit)` - Get top artists by play count
+- `get_critic_alignment(limit)` - Find taste-aligned critics
+
+**Resources**:
+- `overview://summary` - Full listening overview
+- `artists://discovered/{year}` - Artists discovered in a year
+- `critics://lists/{year}` - Critics' year-end lists
+
+**Prompts**:
+- `taste_journey` - Guide for exploring musical journey
+- `recommendation_session(mood)` - Guide for personalized recommendations
+
+### Claude Desktop Configuration
+
+Add to `claude_desktop_config.json`:
+```json
+{
+  "mcpServers": {
+    "lastfm": {
+      "command": "python",
+      "args": ["-m", "lastfm.mcp_server"],
+      "cwd": "/path/to/music-2025"
+    }
+  }
+}
+```
+
 ## Testing Commands
 
 ```bash

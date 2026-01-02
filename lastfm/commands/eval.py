@@ -341,3 +341,83 @@ def eval_compare(
         )
 
     console.print(table)
+
+
+@app.command(name="granularity")
+def eval_granularity(
+    ctx: typer.Context,
+    train_end: int = typer.Option(2022, "--train-end", "-t", help="Last year of training data"),
+    test_start: int = typer.Option(2023, "--test-start", help="First year of test period"),
+    test_end: int = typer.Option(2024, "--test-end", help="Last year of test period"),
+    session_gap: int = typer.Option(30, "--session-gap", help="Gap in minutes to detect test sessions"),
+    min_artists: int = typer.Option(3, "--min-artists", help="Min unique artists per test session"),
+    granularities: str = typer.Option(
+        "weekly,daily",
+        "--granularities", "-g",
+        help="Comma-separated granularities: weekly, daily, monthly"
+    ),
+):
+    """Compare embedding quality via session continuation prediction.
+
+    Tests which time window (weekly vs daily) better captures artist relationships.
+    For each test session, uses one artist as seed and checks if other session
+    artists appear as neighbors.
+
+    Higher hit rate = embeddings better capture listening patterns.
+    """
+    csv = ctx.obj.get("csv") if ctx.obj else None
+    csv_path = get_csv_path(csv)
+
+    console.print("\n[bold magenta]═══ SESSION CONTINUATION EVALUATION ═══[/bold magenta]")
+    console.print(f"[dim]Which time window best predicts artists in the same session?[/dim]\n")
+
+    granularity_list = [g.strip() for g in granularities.split(",")]
+
+    results = evaluation.run_session_continuation_evaluation(
+        csv_path=csv_path,
+        train_end_year=train_end,
+        test_start_year=test_start,
+        test_end_year=test_end,
+        session_gap_minutes=session_gap,
+        min_session_artists=min_artists,
+        granularities=granularity_list,
+    )
+
+    # Display results
+    console.print(f"\n[bold cyan]Results[/bold cyan]")
+    console.print()
+
+    table = Table(show_header=True)
+    table.add_column("Granularity", style="cyan")
+    table.add_column("Predictions", justify="right", style="dim")
+    table.add_column("HR@10", justify="right", style="green")
+    table.add_column("HR@20", justify="right", style="green")
+    table.add_column("HR@50", justify="right", style="green")
+    table.add_column("MRR", justify="right", style="yellow")
+
+    # Sort by MRR descending
+    sorted_results = sorted(results.values(), key=lambda x: -x.mean_reciprocal_rank)
+    best = sorted_results[0] if sorted_results else None
+
+    for r in sorted_results:
+        is_best = r == best
+        mrr_str = f"{r.mean_reciprocal_rank:.3f}"
+        if is_best:
+            mrr_str += " ← Best"
+
+        table.add_row(
+            r.granularity,
+            str(r.total_predictions),
+            f"{r.hr_at_10:.1%}",
+            f"{r.hr_at_20:.1%}",
+            f"{r.hr_at_50:.1%}",
+            mrr_str,
+        )
+
+    console.print(table)
+
+    # Summary
+    if best and len(sorted_results) > 1:
+        second = sorted_results[1]
+        improvement = ((best.mean_reciprocal_rank / second.mean_reciprocal_rank) - 1) * 100
+        console.print(f"\n[green]→ {best.granularity} performs best: {improvement:.1f}% better MRR than {second.granularity}[/green]")

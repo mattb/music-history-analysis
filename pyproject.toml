@@ -21,6 +21,7 @@ dependencies = [
     "datamapplot>=0.4.0",
     "matplotlib>=3.7.0",
     "hdbscan>=0.8.0",
+    "fastmcp>=2.14.2",
 ]
 
 [project.scripts]

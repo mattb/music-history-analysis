@@ -277,6 +277,324 @@ class DualHoldoutResult:
         return self.critics_predicted / self.critics_baseline if self.critics_baseline > 0 else 0
 
 
+@dataclass
+class GranularityResult:
+    """Results for a single granularity setting."""
+    granularity: str  # "weekly", "session30", etc.
+    total_discoveries: int
+    predicted: int
+    baseline: int
+    neighbor_pool_size: int
+
+    @property
+    def rate(self) -> float:
+        return self.predicted / self.total_discoveries if self.total_discoveries > 0 else 0
+
+    @property
+    def lift(self) -> float:
+        return self.predicted / self.baseline if self.baseline > 0 else 0
+
+
+@dataclass
+class SessionContinuationResult:
+    """Results for session continuation prediction."""
+    granularity: str
+    total_sessions: int
+    total_predictions: int
+    hits_at_10: int
+    hits_at_20: int
+    hits_at_50: int
+    mean_reciprocal_rank: float
+    artists_in_space: int  # How many test artists are in embedding space
+
+    @property
+    def hr_at_10(self) -> float:
+        return self.hits_at_10 / self.total_predictions if self.total_predictions > 0 else 0
+
+    @property
+    def hr_at_20(self) -> float:
+        return self.hits_at_20 / self.total_predictions if self.total_predictions > 0 else 0
+
+    @property
+    def hr_at_50(self) -> float:
+        return self.hits_at_50 / self.total_predictions if self.total_predictions > 0 else 0
+
+
+@dataclass
+class GranularityComparisonResult:
+    """Results comparing different time granularities for embedding co-occurrence."""
+    train_years: Tuple[int, int]
+    test_years: Tuple[int, int]
+    total_discoveries: int
+    results: Dict[str, GranularityResult]  # granularity -> result
+
+    def best_by_lift(self) -> str:
+        """Return granularity with highest lift."""
+        return max(self.results.items(), key=lambda x: x[1].lift)[0]
+
+
+def run_session_continuation_evaluation(
+    csv_path: Path,
+    train_end_year: int = 2022,
+    test_start_year: int = 2023,
+    test_end_year: int = 2024,
+    session_gap_minutes: int = 30,
+    min_session_artists: int = 3,
+    granularities: List[str] | None = None,
+) -> Dict[str, SessionContinuationResult]:
+    """Evaluate embeddings by predicting session continuation.
+
+    This tests the core hypothesis: do embeddings capture which artists
+    are played together? For each test session, use one artist as seed
+    and check if other session artists appear as neighbors.
+
+    Args:
+        csv_path: Path to scrobbles CSV
+        train_end_year: Last year to include in training
+        test_start_year: First year of test period
+        test_end_year: Last year of test period
+        session_gap_minutes: Gap for detecting test sessions
+        min_session_artists: Minimum unique artists per test session
+        granularities: List to test (weekly, session30, etc.)
+
+    Returns:
+        Dict mapping granularity -> SessionContinuationResult
+    """
+    if granularities is None:
+        granularities = ["weekly", "session30"]
+
+    print(f"Running session continuation evaluation...")
+    print(f"  Train: up to {train_end_year}")
+    print(f"  Test: {test_start_year}-{test_end_year}")
+    print(f"  Session gap: {session_gap_minutes}min, min artists: {min_session_artists}")
+
+    # Load full data
+    df = data.load_scrobbles(csv_path)
+
+    # Split into train/test
+    df_train = df[df['year'] <= train_end_year]
+    df_test = df[(df['year'] >= test_start_year) & (df['year'] <= test_end_year)]
+
+    print(f"  Train plays: {len(df_train):,}")
+    print(f"  Test plays: {len(df_test):,}")
+
+    # Detect sessions in test data
+    df_test = data.detect_sessions(df_test, gap_minutes=session_gap_minutes)
+
+    # Group artists by session
+    test_sessions = []
+    for session_id in df_test['session_id'].unique():
+        session_df = df_test[df_test['session_id'] == session_id]
+        artists = session_df['artist'].unique().tolist()
+        if len(artists) >= min_session_artists:
+            test_sessions.append(artists)
+
+    print(f"  Test sessions (>= {min_session_artists} artists): {len(test_sessions)}")
+
+    results = {}
+
+    for granularity in granularities:
+        print(f"\n  [{granularity}] Building embeddings...")
+
+        # Build embeddings with the specified granularity
+        user_emb = embeddings.ArtistEmbeddings(csv_path=csv_path)
+
+        # Map granularity names to time windows
+        time_window_map = {
+            "weekly": "W",
+            "daily": "D",
+            "monthly": "M",
+        }
+        if granularity in time_window_map:
+            user_emb.build_from_scrobbles(df_train, n_components=50, time_window=time_window_map[granularity], min_plays=5)
+        else:
+            print(f"  [{granularity}] Unknown, skipping")
+            continue
+
+        embedded_artists = set(user_emb.artist_to_idx.keys())
+
+        # Evaluate on test sessions
+        total_predictions = 0
+        hits_at_10 = 0
+        hits_at_20 = 0
+        hits_at_50 = 0
+        reciprocal_ranks = []
+
+        for session_artists in test_sessions:
+            # Filter to artists in embedding space
+            in_space = [a for a in session_artists if a in embedded_artists]
+            if len(in_space) < 2:
+                continue
+
+            # For each artist, try to predict others
+            for i, seed_artist in enumerate(in_space):
+                targets = [a for j, a in enumerate(in_space) if j != i]
+                if not targets:
+                    continue
+
+                # Get neighbors
+                try:
+                    neighbors = user_emb.find_similar(seed_artist, top_n=100)
+                    neighbor_names = [n for n, _ in neighbors]
+                except ValueError:
+                    continue
+
+                # Check if any targets are in neighbors
+                for target in targets:
+                    total_predictions += 1
+                    if target in neighbor_names[:10]:
+                        hits_at_10 += 1
+                    if target in neighbor_names[:20]:
+                        hits_at_20 += 1
+                    if target in neighbor_names[:50]:
+                        hits_at_50 += 1
+
+                    # Reciprocal rank
+                    try:
+                        rank = neighbor_names.index(target) + 1
+                        reciprocal_ranks.append(1.0 / rank)
+                    except ValueError:
+                        reciprocal_ranks.append(0.0)
+
+        mrr = np.mean(reciprocal_ranks) if reciprocal_ranks else 0.0
+
+        result = SessionContinuationResult(
+            granularity=granularity,
+            total_sessions=len(test_sessions),
+            total_predictions=total_predictions,
+            hits_at_10=hits_at_10,
+            hits_at_20=hits_at_20,
+            hits_at_50=hits_at_50,
+            mean_reciprocal_rank=mrr,
+            artists_in_space=len(embedded_artists),
+        )
+        results[granularity] = result
+
+        print(f"  [{granularity}] Predictions: {total_predictions}")
+        print(f"  [{granularity}] HR@10: {result.hr_at_10:.1%}, HR@20: {result.hr_at_20:.1%}, MRR: {mrr:.3f}")
+
+    return results
+
+
+def run_granularity_evaluation(
+    csv_path: Path,
+    train_end_year: int = 2022,
+    test_start_year: int = 2023,
+    test_end_year: int = 2024,
+    top_n_neighbors: int = 20,
+    min_plays_train: int = 10,
+    granularities: List[str] | None = None,
+) -> GranularityComparisonResult:
+    """Compare holdout performance across different time granularities.
+
+    Tests which grouping approach (weekly vs session-based) best predicts
+    future artist discoveries.
+
+    Args:
+        csv_path: Path to scrobbles CSV
+        train_end_year: Last year to include in training
+        test_start_year: First year of test period
+        test_end_year: Last year of test period
+        top_n_neighbors: Number of neighbors to consider
+        min_plays_train: Minimum plays in train period to be a "seed" artist
+        granularities: List of granularities to test. Options:
+            - "weekly" (time_window="W")
+            - "daily" (time_window="D")
+            - "session30" (30-minute session gap)
+            - "session60" (60-minute session gap)
+
+    Returns:
+        GranularityComparisonResult with results for each granularity
+    """
+    if granularities is None:
+        granularities = ["weekly", "session30", "session60"]
+
+    print(f"Running granularity comparison evaluation...")
+    print(f"  Train: up to {train_end_year}")
+    print(f"  Test: {test_start_year}-{test_end_year}")
+    print(f"  Testing: {', '.join(granularities)}")
+
+    # Load full data
+    df = data.load_scrobbles(csv_path)
+
+    # Split into train/test
+    df_train = df[df['year'] <= train_end_year]
+    df_test = df[(df['year'] >= test_start_year) & (df['year'] <= test_end_year)]
+
+    print(f"  Train plays: {len(df_train):,}")
+    print(f"  Test plays: {len(df_test):,}")
+
+    # Find discoveries: artists first played in test period
+    train_artists = set(df_train['artist'].unique())
+    test_artists = set(df_test['artist'].unique())
+    discoveries = test_artists - train_artists
+    discoveries_norm = {crossref.normalize_for_matching(a): a for a in discoveries}
+
+    print(f"  Discoveries in test period: {len(discoveries)}")
+
+    # Get seed artists
+    train_plays = df_train.groupby('artist').size()
+    seed_artists = train_plays[train_plays >= min_plays_train].index.tolist()
+    print(f"  Seed artists (>= {min_plays_train} plays): {len(seed_artists)}")
+
+    results = {}
+
+    for granularity in granularities:
+        print(f"\n  [{granularity}] Building embeddings...")
+
+        # Build embeddings with the specified granularity
+        user_emb = embeddings.ArtistEmbeddings(csv_path=csv_path)
+
+        # Map granularity names to time windows
+        time_window_map = {
+            "weekly": "W",
+            "daily": "D",
+            "monthly": "M",
+        }
+        if granularity in time_window_map:
+            user_emb.build_from_scrobbles(df_train, n_components=50, time_window=time_window_map[granularity], min_plays=5)
+        else:
+            print(f"  [{granularity}] Unknown granularity, skipping")
+            continue
+
+        # Find neighbors of seed artists
+        neighbor_pool = set()
+        for artist in seed_artists:
+            if artist in user_emb.artist_to_idx:
+                try:
+                    neighbors = user_emb.find_similar(artist, top_n=top_n_neighbors)
+                    for neighbor, _ in neighbors:
+                        neighbor_pool.add(crossref.normalize_for_matching(neighbor))
+                except ValueError:
+                    continue
+
+        print(f"  [{granularity}] Unique neighbors: {len(neighbor_pool)}")
+
+        # Calculate predictions
+        predicted_norm = neighbor_pool & set(discoveries_norm.keys())
+        all_artists = set(crossref.normalize_for_matching(a) for a in user_emb.artist_to_idx.keys())
+        discoveries_possible = len(set(discoveries_norm.keys()) & all_artists)
+        random_baseline = len(neighbor_pool) * (discoveries_possible / max(len(all_artists), 1))
+
+        result = GranularityResult(
+            granularity=granularity,
+            total_discoveries=len(discoveries),
+            predicted=len(predicted_norm),
+            baseline=int(random_baseline),
+            neighbor_pool_size=len(neighbor_pool),
+        )
+
+        results[granularity] = result
+        print(f"  [{granularity}] Predicted: {result.predicted} (baseline: {result.baseline}) - {result.lift:.2f}x lift")
+
+    return GranularityComparisonResult(
+        train_years=(int(df_train['year'].min()), train_end_year),
+        test_years=(test_start_year, test_end_year),
+        total_discoveries=len(discoveries),
+        results=results,
+    )
+
+
 def run_holdout_evaluation(
     csv_path: Path,
     train_end_year: int = 2022,

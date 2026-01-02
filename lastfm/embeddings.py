@@ -63,7 +63,7 @@ class ArtistEmbeddings:
         self,
         df: pd.DataFrame,
         n_components: int = 50,
-        time_window: str = "W",  # Week-based co-occurrence
+        time_window: str = "W",  # "W" for weekly (best), "D" for daily
         min_plays: int = 5,
         method: str = "cooccurrence",  # "cooccurrence" or "temporal"
     ) -> None:
@@ -72,7 +72,8 @@ class ArtistEmbeddings:
         Args:
             df: DataFrame with scrobble data (must have 'artist' and 'timestamp')
             n_components: Number of embedding dimensions (default: 50)
-            time_window: Pandas resample frequency for time windows (default: 'W' for weekly)
+            time_window: Time window for co-occurrence grouping (default: "W" for weekly).
+                        Weekly was validated as best performing in eval suite.
             min_plays: Minimum plays for an artist to be included (default: 5)
             method: "cooccurrence" (artists × artists) or "temporal" (artists × time) (default: "cooccurrence")
         """
@@ -91,26 +92,26 @@ class ArtistEmbeddings:
 
         if method == "cooccurrence":
             # Build artist × artist co-occurrence matrix
-            # matrix[i,j] = number of weeks where both artist i and artist j were played
             print(f"  Building artist co-occurrence matrix...")
 
-            df_filtered["time_window"] = df_filtered["timestamp"].dt.to_period(time_window)
-            time_windows = df_filtered["time_window"].unique()
-
-            print(f"  Time windows ({time_window}): {len(time_windows)}")
+            # Use weekly co-occurrence (tested as best performing granularity)
+            # Session-based was tested but underperformed weekly in eval suite
+            df_filtered["group_id"] = df_filtered["timestamp"].dt.to_period(time_window)
+            groups = df_filtered["group_id"].unique()
+            print(f"  Groups: {len(groups)} time windows ({time_window})")
 
             # Initialize symmetric matrix
             n_artists = len(valid_artists)
             matrix = np.zeros((n_artists, n_artists))
 
-            # For each time window, find which artists were played
-            for window in time_windows:
-                window_artists = df_filtered[df_filtered["time_window"] == window]["artist"].unique()
-                window_indices = [self.artist_to_idx[a] for a in window_artists if a in self.artist_to_idx]
+            # For each group, find which artists were played
+            for group in groups:
+                group_artists = df_filtered[df_filtered["group_id"] == group]["artist"].unique()
+                group_indices = [self.artist_to_idx[a] for a in group_artists if a in self.artist_to_idx]
 
                 # Increment co-occurrence for all pairs (including self)
-                for i in window_indices:
-                    for j in window_indices:
+                for i in group_indices:
+                    for j in group_indices:
                         matrix[i, j] += 1
 
             print(f"  Matrix shape: {matrix.shape}")
@@ -348,7 +349,7 @@ class ArtistEmbeddings:
 def build_embeddings_from_csv(
     csv_path: Path,
     n_components: int = 50,
-    time_window: str = "W",
+    time_window: str = "W",  # Weekly co-occurrence (validated as best)
     min_plays: int = 5,
     method: str = "cooccurrence",
     force_rebuild: bool = False,
@@ -358,7 +359,7 @@ def build_embeddings_from_csv(
     Args:
         csv_path: Path to scrobbles CSV
         n_components: Number of embedding dimensions
-        time_window: Time window for co-occurrence ('D' = daily, 'W' = weekly)
+        time_window: Time window for co-occurrence (default: "W" for weekly)
         min_plays: Minimum plays for an artist to be included
         method: "cooccurrence" (artist × artist) or "temporal" (artist × time)
         force_rebuild: Force rebuild even if cached embeddings exist
@@ -371,8 +372,8 @@ def build_embeddings_from_csv(
     # Pass csv_path to create CSV-specific cache directory
     embeddings = ArtistEmbeddings(csv_path=csv_path)
 
-    # Create cache name that includes method and min_plays
-    cache_name = f"artist_embeddings_{method}_minplays{min_plays}"
+    # Create cache name that reflects the configuration
+    cache_name = f"artist_embeddings_{method}_{time_window}_minplays{min_plays}"
 
     # Try to load from cache
     if not force_rebuild and embeddings.load(cache_name=cache_name):
@@ -388,7 +389,7 @@ def build_embeddings_from_csv(
         method=method,
     )
 
-    # Save to cache with method and min_plays in filename
+    # Save to cache
     embeddings.save(cache_name=cache_name)
 
     return embeddings

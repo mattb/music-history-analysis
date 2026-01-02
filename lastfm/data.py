@@ -352,3 +352,63 @@ def get_listened_albums(
         return get_albums_by_familiarity(df, min_familiarity=min_familiarity)
     else:
         return get_albums_listened_to(df)
+
+
+def detect_sessions(
+    df: pd.DataFrame,
+    gap_minutes: int = 30,
+) -> pd.DataFrame:
+    """Add session_id column based on time gaps between plays.
+
+    A new session starts when the gap between consecutive plays exceeds gap_minutes.
+    This captures intentional listening sessions rather than arbitrary time windows.
+
+    Args:
+        df: DataFrame with 'timestamp' column
+        gap_minutes: Minutes of inactivity to define session boundary (default: 30)
+
+    Returns:
+        DataFrame with added 'session_id' column (sorted by timestamp)
+    """
+    df_sorted = df.sort_values("timestamp").copy()
+    time_gaps = df_sorted["timestamp"].diff().dt.total_seconds() / 60
+    is_new_session = (time_gaps > gap_minutes) | time_gaps.isna()
+    df_sorted["session_id"] = is_new_session.cumsum()
+    return df_sorted
+
+
+def get_session_stats(df: pd.DataFrame, gap_minutes: int = 30) -> dict:
+    """Get statistics about detected sessions.
+
+    Args:
+        df: DataFrame with 'timestamp' column
+        gap_minutes: Minutes of inactivity to define session boundary
+
+    Returns:
+        Dict with session statistics
+    """
+    df_sessions = detect_sessions(df, gap_minutes=gap_minutes)
+
+    # Group by session
+    session_groups = df_sessions.groupby("session_id")
+
+    # Calculate stats
+    total_sessions = df_sessions["session_id"].nunique()
+    tracks_per_session = session_groups.size()
+    artists_per_session = session_groups["artist"].nunique()
+
+    # Session durations (first to last track in session)
+    session_durations = session_groups["timestamp"].agg(lambda x: (x.max() - x.min()).total_seconds() / 60)
+
+    return {
+        "total_sessions": total_sessions,
+        "total_tracks": len(df_sessions),
+        "avg_tracks_per_session": tracks_per_session.mean(),
+        "median_tracks_per_session": tracks_per_session.median(),
+        "avg_artists_per_session": artists_per_session.mean(),
+        "median_artists_per_session": artists_per_session.median(),
+        "avg_session_duration_minutes": session_durations.mean(),
+        "median_session_duration_minutes": session_durations.median(),
+        "single_track_sessions": (tracks_per_session == 1).sum(),
+        "multi_artist_sessions": (artists_per_session > 1).sum(),
+    }
