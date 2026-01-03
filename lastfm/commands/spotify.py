@@ -215,3 +215,48 @@ def spotify_playlist(
             console.print(f"[dim]{tracks} tracks from {found}/{len(missing_albums)} albums found[/dim]")
         else:
             console.print("[yellow]Could not find any albums on Spotify[/yellow]")
+
+
+@app.command(name="convert")
+def spotify_convert(
+    directory: Path = typer.Argument(..., help="Directory containing Spotify JSON files"),
+    output: Path = typer.Option(None, "--output", "-o", help="Output CSV path"),
+    min_duration: int = typer.Option(30, "--min-duration", "-d", help="Minimum play duration in seconds"),
+    include_skipped: bool = typer.Option(False, "--include-skipped", help="Include skipped tracks"),
+):
+    """Convert Spotify Extended Streaming History to CSV format.
+
+    Downloads your data from: https://www.spotify.com/account/privacy/
+    Request "Extended streaming history" and extract the ZIP.
+
+    The output CSV is compatible with all lastfm commands and includes
+    extended Spotify-specific columns (ms_played, shuffle, platform, etc.)
+    for future analysis features.
+    """
+    from ..spotify_converter import convert_spotify_directory
+
+    if not directory.exists():
+        console.print(f"[red]Directory not found: {directory}[/red]")
+        raise typer.Exit(1)
+
+    # Check for JSON files
+    json_files = list(directory.glob("Streaming_History_Audio_*.json"))
+    if not json_files:
+        console.print(f"[red]No Spotify streaming history files found in {directory}[/red]")
+        console.print("[dim]Expected files like: Streaming_History_Audio_2023-2024_0.json[/dim]")
+        raise typer.Exit(1)
+
+    if output is None:
+        output = Path.cwd() / "spotify-scrobbles.csv"
+
+    console.print(f"[dim]Found {len(json_files)} Spotify history files[/dim]")
+
+    min_ms = min_duration * 1000
+    total, kept = convert_spotify_directory(
+        directory, output,
+        min_ms=min_ms,
+        exclude_skipped=not include_skipped,
+    )
+
+    console.print(f"[green]Converted {kept:,} plays to {output}[/green]")
+    console.print(f"[dim]Filtered out {total - kept:,} records (short plays, skips, podcasts)[/dim]")

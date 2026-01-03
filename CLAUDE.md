@@ -79,37 +79,87 @@ lastfm fetch YOUR_USERNAME --start-year 2024
 - **Credentials**: `~/.cache/lastfm-analysis/spotify_credentials.json`
 - **Setup**: `lastfm spotify auth --client-id X --client-secret Y`
 
+### 6. Spotify Streaming History (Alternative to Last.fm)
+- **Source**: Request "Extended streaming history" from https://www.spotify.com/account/privacy/
+- **Format**: JSON files named `Streaming_History_Audio_*.json`
+- **Convert**: `lastfm spotify convert <directory> --output scrobbles.csv`
+- **Fields preserved**: Core Last.fm-compatible columns + extended Spotify data (ms_played, shuffle, platform, etc.)
+- **Filters applied**: 30+ second plays only, skipped tracks excluded by default
+- **Usage**: After conversion, use `--csv spotify-scrobbles.csv` with any command
+
+**Note**: Spotify data lacks MusicBrainz IDs, so metadata enrichment relies on artist/album name matching.
+
 ## Key Modules
 
 | Module | Purpose |
 |--------|---------|
-| `lastfm/cli.py` | Main CLI entry point with root commands (stats, overview, review, artist, fetch, fetch-api-key) and global options (~2600 lines) |
-| `lastfm/commands/listen.py` | Listen command group: top, plays, discovered, abandoned, first (~450 lines) |
-| `lastfm/commands/critics.py` | Critics command group: fetch, matched, unheard, overlap, list, who-listed, blind-spots, accuracy, tracker (~1200 lines) |
-| `lastfm/commands/history.py` | History command group: loyalty, evolution (~600 lines) |
-| `lastfm/commands/metadata.py` | Metadata command group: download, enrich, catalog, genres, labels, countries, types (~800 lines) |
-| `lastfm/commands/spotify.py` | Spotify command group: auth, playlist (~300 lines) |
-| `lastfm/data.py` | DataFrame loading, filtering, aggregation, album listening criteria (5x5), discovery/abandonment detection |
-| `lastfm/crossref.py` | Cross-reference critics with listening history, normalization functions, uses album listening criteria |
+| `lastfm/cli.py` | Main CLI entry point with root commands (stats, overview, review, artist, fetch, fetch-api-key) and global options |
+| `lastfm/commands/listen.py` | Listen command group: top, plays, discovered, abandoned, first |
+| `lastfm/commands/critics.py` | Critics command group: fetch, matched, unheard, overlap, list, who-listed, blind-spots, accuracy, tracker |
+| `lastfm/commands/history.py` | History command group: loyalty, evolution |
+| `lastfm/commands/metadata.py` | Metadata command group: download, enrich, catalog, genres, labels, countries, types |
+| `lastfm/commands/spotify.py` | Spotify command group: auth, playlist, convert |
+| `lastfm/commands/visualize.py` | Visualize command group: calendar, genome |
+| `lastfm/commands/eval.py` | Eval command group: holdout, followthrough, baseline, compare, granularity |
+| `lastfm/data.py` | DataFrame loading, filtering, aggregation, album familiarity scoring, discovery/abandonment detection |
+| `lastfm/crossref.py` | Cross-reference critics with listening history, normalization functions |
 | `lastfm/crawler.py` | yearendlists.com scraper |
-| `lastfm/lastfm_api.py` | Last.fm API client for downloading scrobble history (~180 lines) |
+| `lastfm/lastfm_api.py` | Last.fm API client for downloading scrobble history |
 | `lastfm/spotify.py` | Spotify OAuth + playlist creation |
+| `lastfm/spotify_converter.py` | Convert Spotify Extended Streaming History to CSV format |
+| `lastfm/embeddings.py` | Artist similarity embeddings using co-occurrence matrix + SVD |
+| `lastfm/evaluation.py` | Embedding quality evaluation framework |
 | `lastfm/release_years.py` | MusicBrainz API integration (rate-limited) |
 | `lastfm/musicbrainz_db.py` | Local MusicBrainz SQLite database |
+| `lastfm/mcp_server.py` | MCP server exposing analysis tools for LLM agents |
 
 ## Album Listening Criteria
 
-**Definition**: An album is only considered "listened to" if you've played at least **5 different tracks** from it, each at least **5 times**.
+The CLI uses **continuous familiarity scoring** to determine if you've "listened to" an album. This replaced the old binary 5x5 rule.
 
-This prevents albums from being counted as "heard" when you've only played one or two tracks from them once or twice. It ensures you've genuinely engaged with the album.
+### Familiarity Scoring (Default)
 
-**Implementation**: All album-related analysis uses `data.get_albums_listened_to(df)`:
+Albums get a score from 0.0 to 1.0 based on three weighted components:
+
+| Component | Weight | What it measures |
+|-----------|--------|------------------|
+| **Coverage** | 40% | How many different tracks you've played (capped at 10) |
+| **Depth** | 40% | Average plays per track (capped at 10) |
+| **Dispersion** | 20% | How evenly distributed plays are across tracks |
+
+**Example scores:**
+- 10+ tracks, 10+ avg plays, even distribution: ~1.0
+- 5 tracks, 5 avg plays, even distribution: ~0.5
+- 2 tracks, 3 avg plays, uneven: ~0.2
+- 1 track, 1 play: ~0.1
+
+**Global option**: `--familiarity` or `-f` (default: 0.4)
+```bash
+# Default threshold (0.4)
+lastfm critics matched
+
+# Stricter threshold (only well-known albums)
+lastfm --familiarity 0.6 critics matched
+
+# More permissive (include casual listens)
+lastfm --familiarity 0.2 critics matched
+```
+
+### Legacy Binary 5x5 Rule
+
+The old binary rule still exists for compatibility: an album is "listened to" if you've played **5+ different tracks**, each **5+ times**.
 
 ```python
-from lastfm import data
+# Continuous scoring (default)
+familiarity = data.get_album_familiarity(df)
+# Returns: dict[(artist, album)] -> float (0.0-1.0)
 
-# Get albums that meet the 5x5 criteria
-listened_albums = data.get_albums_listened_to(df)
+# Binary threshold on familiarity
+listened = data.get_albums_by_familiarity(df, min_familiarity=0.4)
+# Returns: set of (artist, album) tuples
+
+# Legacy binary 5x5 rule
+listened = data.get_albums_listened_to(df, min_unique_tracks=5, min_plays_per_track=5)
 # Returns: set of (artist, album) tuples
 ```
 
@@ -118,15 +168,6 @@ listened_albums = data.get_albums_listened_to(df)
 - Review and overview reports
 - Artist command comparisons
 - All album statistics
-
-If you need different criteria, modify the parameters:
-```python
-listened_albums = data.get_albums_listened_to(
-    df,
-    min_unique_tracks=3,  # At least 3 tracks
-    min_plays_per_track=3  # Each played 3+ times
-)
-```
 
 ## Normalization Strategy
 
@@ -201,9 +242,10 @@ lastfm --year 2024 critics who-listed "Charli XCX"  # Only 2024
 
 ## CLI Commands Reference
 
-**Global Options**: `lastfm [--csv PATH] [--year YYYY] COMMAND`
-- `--csv, -c`: Path to Last.fm CSV export (auto-detects `recenttracks-*.csv` if not specified)
+**Global Options**: `lastfm [--csv PATH] [--year YYYY] [--familiarity F] COMMAND`
+- `--csv, -c`: Path to Last.fm or Spotify CSV export (auto-detects `recenttracks-*.csv` if not specified)
 - `--year, -y`: Filter to specific year (defaults to 2025)
+- `--familiarity, -f`: Album familiarity threshold 0-1 (default: 0.4). See "Album Listening Criteria"
 - `--verbose, -v`: Verbose output
 
 ### Root Commands
@@ -250,9 +292,23 @@ MusicBrainz enrichment (requires `metadata download` first):
 - `metadata types` - Album vs EP vs single breakdown
 
 ### Spotify Group (`lastfm spotify ...`)
-Spotify playlist integration:
+Spotify integration and data import:
 - `spotify auth [--client-id X] [--client-secret Y]` - Set up Spotify API credentials
 - `spotify playlist [--type matched|missing|both]` - Create playlists from year-in-review data
+- `spotify convert <dir> [--output PATH] [--min-duration S] [--include-skipped]` - Convert Spotify Extended Streaming History to CSV
+
+### Visualize Group (`lastfm visualize ...`)
+Visual representations of listening data:
+- `visualize calendar [--year Y]` - GitHub-style calendar heatmap of listening activity
+- `visualize genome [--year Y] [--min-plays N]` - 2D "musical genome" map using artist embeddings (UMAP projection)
+
+### Eval Group (`lastfm eval ...`)
+Evaluate embedding and recommendation quality:
+- `eval holdout` - Test if embeddings predict future artist discoveries
+- `eval followthrough` - Test if critic recommendations became your favorites
+- `eval baseline` - Run full evaluation suite and save as baseline for comparison
+- `eval compare` - Compare all saved baselines
+- `eval granularity` - Compare embedding quality via session continuation prediction
 
 ## Key Analysis Patterns
 
@@ -318,6 +374,50 @@ for ctx in artist_contexts:
 ```
 
 This prevents showing artists like David Bowie (no 2025 release) when generating a 2025 review, ensuring "Hidden Gems" are actual new releases that critics overlooked.
+
+## Artist Embeddings System
+
+The `embeddings.py` module builds artist similarity embeddings using listening co-occurrence and SVD (Singular Value Decomposition).
+
+### How It Works
+
+1. **Co-occurrence Matrix**: Build a matrix of which artists appear together in listening sessions
+2. **SVD Decomposition**: Reduce to 64-dimensional embeddings that capture similarity
+3. **Cosine Similarity**: Find similar artists by comparing embedding vectors
+
+### Embedding Types
+
+| Type | Source | Use Case |
+|------|--------|----------|
+| **User Embeddings** | Your listening sessions | "Artists similar to X in my taste space" |
+| **Critics Embeddings** | Critics' year-end lists | "Artists similar to X in critics' space" |
+| **Critic Vectors** | Per-critic taste profiles | "Which critics align with my taste?" |
+
+### Usage
+
+```python
+from lastfm import embeddings
+
+# Build from your listening history
+user_emb = embeddings.build_embeddings_from_csv(csv_path)
+
+# Find similar artists
+similar = user_emb.similar_artists("Radiohead", top_n=10)
+# Returns: [("Portishead", 0.89), ("Massive Attack", 0.85), ...]
+
+# Get raw embedding vector
+vector = user_emb.get_embedding("Radiohead")
+# Returns: numpy array of shape (64,)
+```
+
+### Cache
+
+Embeddings are cached per-CSV in `~/.cache/lastfm-analysis/<csv_hash>/`:
+- `artist_embeddings.pkl` - User embeddings
+- `critics_embeddings.pkl` - Critics space embeddings
+- `critic_vectors.pkl` - Per-critic taste vectors
+
+The MCP server and `visualize genome` command use these embeddings for similarity queries and 2D projections.
 
 ## HTML Report Generation
 
@@ -530,6 +630,19 @@ uv run lastfm history evolution
 # Spotify integration
 uv run lastfm spotify auth --client-id X --client-secret Y
 uv run lastfm --year 2024 spotify playlist --type both
+
+# Import Spotify data (alternative to Last.fm)
+uv run lastfm spotify convert path/to/spotify-data/ -o spotify-scrobbles.csv
+uv run lastfm --csv spotify-scrobbles.csv stats
+
+# Visualizations
+uv run lastfm visualize calendar --year 2024
+uv run lastfm visualize genome --min-plays 10
+
+# Evaluation (test embedding/recommendation quality)
+uv run lastfm eval holdout
+uv run lastfm eval followthrough
+uv run lastfm eval baseline
 ```
 
 ## Dependencies
@@ -542,3 +655,8 @@ Key packages (see pyproject.toml):
 - `beautifulsoup4` + `lxml` - HTML parsing
 - `spotipy` - Spotify API
 - `musicbrainzngs` - MusicBrainz API (fallback only)
+- `scikit-learn` - SVD for embeddings, similarity calculations
+- `numpy` - Numerical operations
+- `umap-learn` - UMAP projection for genome visualization
+- `datamapplot` - Plotting for genome visualization
+- `fastmcp` - MCP server framework
