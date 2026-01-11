@@ -35,6 +35,24 @@ class ReleaseInfo:
     labels: list[str] | None = None
 
 
+def database_exists() -> bool:
+    """Check if the MusicBrainz database has been downloaded."""
+    return MUSICBRAINZ_DB.exists()
+
+
+def get_connection() -> sqlite3.Connection:
+    """Get a connection to the MusicBrainz database.
+
+    Raises FileNotFoundError if the database hasn't been downloaded.
+    """
+    if not database_exists():
+        raise FileNotFoundError(
+            f"MusicBrainz database not found at {MUSICBRAINZ_DB}. "
+            "Run 'lastfm metadata download' first."
+        )
+    return sqlite3.connect(MUSICBRAINZ_DB)
+
+
 def get_latest_dump_url() -> str:
     """Get the URL for the latest release dump."""
     response = httpx.get(f"{DUMP_BASE_URL}/LATEST", follow_redirects=True)

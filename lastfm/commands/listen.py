@@ -862,3 +862,242 @@ def _show_dimension(emb, dim_idx: int, variance_ratio: float, poles: int):
     # Show negative pole
     neg_artists = [a for a, _ in poles_data["negative"]]
     console.print(f"  [red]-[/red] {', '.join(neg_artists)}")
+
+
+@app.command(name="obsessions")
+def listen_obsessions(
+    ctx: typer.Context,
+    min_plays: int = typer.Option(20, "--min-plays", "-m", help="Minimum plays for a track"),
+    limit: int = typer.Option(30, "--limit", "-n", help="Number of results"),
+):
+    """Find tracks you obsessed over without exploring their albums.
+
+    Shows tracks with high play counts where you never really explored
+    the rest of the album - your "obsession tracks".
+    """
+    # Get global options from context
+    csv = ctx.obj.get("csv") if ctx.obj else None
+    year = ctx.obj.get("year") if ctx.obj else None
+    familiarity = ctx.obj.get("familiarity", 0.4) if ctx.obj else 0.4
+
+    df = data.load_scrobbles(get_csv_path(csv))
+
+    if year:
+        df = data.filter_by_year(df, year)
+
+    result = data.get_obsession_tracks(
+        df,
+        min_plays=min_plays,
+        max_familiarity=familiarity,
+    )
+
+    if result.empty:
+        console.print(f"[yellow]No obsession tracks found with {min_plays}+ plays[/yellow]")
+        return
+
+    result = result.head(limit)
+
+    title = f"Obsession Tracks ({year})" if year else "Obsession Tracks (All Time)"
+    table = Table(title=title)
+    table.add_column("Track", style="cyan")
+    table.add_column("Artist", style="dim")
+    table.add_column("Plays", justify="right", style="green")
+    table.add_column("Peak Year(s)", justify="right", style="magenta")
+    table.add_column("Album", style="yellow")
+    table.add_column("Familiarity", justify="right", style="red")
+    table.add_column("% of Album", justify="right", style="dim")
+
+    for _, row in result.iterrows():
+        track = row["track"]
+        if len(track) > 35:
+            track = track[:32] + "..."
+
+        album = row["album"]
+        if len(album) > 25:
+            album = album[:22] + "..."
+
+        fam_score = row["album_familiarity"]
+        tracks_on = int(row["tracks_on_album"])
+        fam_display = f"{fam_score:.2f} ({tracks_on} trk)"
+
+        # Format peak years
+        peak_years = row.get("peak_years", [])
+        if peak_years:
+            peak_str = ", ".join(str(y) for y in peak_years)
+        else:
+            peak_str = "-"
+
+        table.add_row(
+            track,
+            row["artist"],
+            str(int(row["plays"])),
+            peak_str,
+            album,
+            fam_display,
+            f"{row['pct_of_album_plays']:.0f}%",
+        )
+
+    console.print(table)
+    console.print(f"\n[dim]Showing tracks with {min_plays}+ plays from albums with <{familiarity:.0%} familiarity[/dim]")
+
+
+@app.command(name="one-hit")
+def listen_one_hit(
+    ctx: typer.Context,
+    min_concentration: float = typer.Option(0.7, "--min-concentration", "-c", help="Min % of plays on top track (0-1)"),
+    min_plays: int = typer.Option(10, "--min-plays", "-m", help="Minimum plays on top track"),
+    limit: int = typer.Option(30, "--limit", "-n", help="Number of results"),
+):
+    """Find artists where one track dominates your listening.
+
+    Shows artists where you've only really engaged with a single song -
+    your "one-hit" relationships with artists.
+    """
+    # Get global options from context
+    csv = ctx.obj.get("csv") if ctx.obj else None
+    year = ctx.obj.get("year") if ctx.obj else None
+
+    df = data.load_scrobbles(get_csv_path(csv))
+
+    if year:
+        df = data.filter_by_year(df, year)
+
+    result = data.get_one_track_artists(
+        df,
+        min_concentration=min_concentration,
+        min_top_track_plays=min_plays,
+    )
+
+    if result.empty:
+        console.print(f"[yellow]No one-hit artists found[/yellow]")
+        return
+
+    result = result.head(limit)
+
+    title = f"One-Hit Artists ({year})" if year else "One-Hit Artists (All Time)"
+    table = Table(title=title)
+    table.add_column("Artist", style="cyan")
+    table.add_column("The Track", style="yellow")
+    table.add_column("Plays", justify="right", style="green")
+    table.add_column("Peak Year(s)", justify="right", style="magenta")
+    table.add_column("Concentration", justify="right", style="dim")
+
+    for _, row in result.iterrows():
+        artist = row["artist"]
+        if len(artist) > 25:
+            artist = artist[:22] + "..."
+
+        track = row["top_track"]
+        if len(track) > 35:
+            track = track[:32] + "..."
+
+        concentration_pct = row["concentration"] * 100
+
+        # Format peak years
+        peak_years = row.get("peak_years", [])
+        if peak_years:
+            if len(peak_years) == 1:
+                years_str = str(peak_years[0])
+            elif len(peak_years) == 2:
+                years_str = f"{peak_years[0]}, {peak_years[1]}"
+            else:
+                # Show range if more than 2
+                years_str = f"{peak_years[0]}-{peak_years[-1]}"
+        else:
+            years_str = "-"
+
+        table.add_row(
+            artist,
+            track,
+            str(int(row["top_track_plays"])),
+            years_str,
+            f"{concentration_pct:.0f}%",
+        )
+
+    console.print(table)
+    console.print(f"\n[dim]Artists where {min_concentration*100:.0f}%+ of plays are on one track[/dim]")
+
+
+@app.command(name="ep-artists")
+def listen_ep_artists(
+    ctx: typer.Context,
+    min_ratio: float = typer.Option(0.5, "--min-ratio", "-r", help="Min ratio of EP/single plays (0-1)"),
+    min_plays: int = typer.Option(20, "--min-plays", "-m", help="Minimum total plays"),
+    limit: int = typer.Option(30, "--limit", "-n", help="Number of results"),
+):
+    """Find artists where you mainly listen to EPs/singles, not albums.
+
+    Shows artists who primarily release EPs and singles rather than
+    traditional albums - typical for electronic producers and remixers.
+
+    Requires MusicBrainz database (run 'lastfm metadata download' first).
+    """
+    from .. import musicbrainz_db
+
+    # Get global options from context
+    csv = ctx.obj.get("csv") if ctx.obj else None
+    year = ctx.obj.get("year") if ctx.obj else None
+
+    # Check if MusicBrainz DB exists
+    if not musicbrainz_db.database_exists():
+        console.print("[red]MusicBrainz database not found.[/red]")
+        console.print("[yellow]Run 'lastfm metadata download' first to download release type data.[/yellow]")
+        raise typer.Exit(1)
+
+    df = data.load_scrobbles(get_csv_path(csv))
+
+    if year:
+        df = data.filter_by_year(df, year)
+
+    # Create a lookup function that uses the MusicBrainz DB
+    conn = musicbrainz_db.get_connection()
+
+    def lookup(artist: str, album: str):
+        return musicbrainz_db.lookup_release(artist, album, conn)
+
+    console.print("[dim]Looking up release types from MusicBrainz...[/dim]\n")
+
+    result = data.get_ep_single_artists(
+        df,
+        musicbrainz_lookup=lookup,
+        min_non_album_ratio=min_ratio,
+        min_total_plays=min_plays,
+    )
+
+    conn.close()
+
+    if result.empty:
+        console.print(f"[yellow]No EP/single-heavy artists found[/yellow]")
+        return
+
+    result = result.head(limit)
+
+    title = f"EP/Single Artists ({year})" if year else "EP/Single Artists (All Time)"
+    table = Table(title=title)
+    table.add_column("Artist", style="cyan")
+    table.add_column("Album", justify="right", style="dim")
+    table.add_column("EP/Single", justify="right", style="green")
+    table.add_column("Ratio", justify="right", style="yellow")
+    table.add_column("Top Non-Album", style="magenta")
+
+    for _, row in result.iterrows():
+        artist = row["artist"]
+        if len(artist) > 25:
+            artist = artist[:22] + "..."
+
+        top_release = row["top_non_album"] or "-"
+        if len(top_release) > 30:
+            top_release = top_release[:27] + "..."
+
+        ratio_pct = row["non_album_ratio"] * 100
+
+        table.add_row(
+            artist,
+            str(int(row["album_plays"])),
+            str(int(row["ep_single_plays"])),
+            f"{ratio_pct:.0f}%",
+            top_release,
+        )
+
+    console.print(table)
+    console.print(f"\n[dim]Artists with {min_ratio*100:.0f}%+ plays from EPs/singles vs albums[/dim]")

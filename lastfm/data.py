@@ -308,6 +308,107 @@ def get_album_familiarity(
     return familiarity_scores
 
 
+def get_album_familiarity_details(
+    df: pd.DataFrame,
+    coverage_weight: float = 0.4,
+    depth_weight: float = 0.4,
+    dispersion_weight: float = 0.2,
+    max_tracks_for_coverage: int = 10,
+    max_avg_plays_for_depth: int = 10,
+) -> dict[tuple[str, str], dict]:
+    """Get detailed familiarity breakdown for each album.
+
+    Returns the component scores (coverage, depth, dispersion) along with
+    the final familiarity score, useful for understanding WHY an album
+    has a particular familiarity level.
+
+    Args:
+        df: DataFrame of scrobbles
+        coverage_weight: Weight for track coverage component (default: 0.4)
+        depth_weight: Weight for play depth component (default: 0.4)
+        dispersion_weight: Weight for play dispersion component (default: 0.2)
+        max_tracks_for_coverage: Tracks needed for full coverage score (default: 10)
+        max_avg_plays_for_depth: Avg plays/track for full depth score (default: 10)
+
+    Returns:
+        Dict mapping (artist, album) -> {
+            "familiarity": float,  # Final score 0-1
+            "coverage": float,     # Track coverage 0-1
+            "depth": float,        # Play depth 0-1
+            "dispersion": float,   # Play distribution evenness 0-1
+            "unique_tracks": int,  # Number of different tracks played
+            "total_plays": int,    # Total plays across all tracks
+            "avg_plays_per_track": float,
+        }
+    """
+    import numpy as np
+
+    # Filter to rows with albums
+    df_albums = df[df["album"] != ""].copy()
+
+    if df_albums.empty:
+        return {}
+
+    # Group by artist/album/track and count plays per track
+    track_plays = (
+        df_albums.groupby(["artist", "album", "track"])
+        .size()
+        .reset_index(name="plays")
+    )
+
+    # Aggregate at album level
+    album_stats = track_plays.groupby(["artist", "album"]).agg(
+        unique_tracks=("track", "count"),
+        total_plays=("plays", "sum"),
+        play_list=("plays", list),
+    ).reset_index()
+
+    results = {}
+
+    for _, row in album_stats.iterrows():
+        artist = row["artist"]
+        album = row["album"]
+        unique_tracks = row["unique_tracks"]
+        total_plays = row["total_plays"]
+        play_list = row["play_list"]
+
+        # Component 1: Track coverage (0-1)
+        coverage = min(unique_tracks / max_tracks_for_coverage, 1.0)
+
+        # Component 2: Play depth (0-1)
+        avg_plays = total_plays / unique_tracks if unique_tracks > 0 else 0
+        depth = min(avg_plays / max_avg_plays_for_depth, 1.0)
+
+        # Component 3: Dispersion (0-1)
+        if unique_tracks > 1:
+            plays_array = np.array(play_list, dtype=float)
+            probs = plays_array / plays_array.sum()
+            entropy = -np.sum(probs * np.log2(probs + 1e-10))
+            max_entropy = np.log2(unique_tracks)
+            dispersion = entropy / max_entropy if max_entropy > 0 else 1.0
+        else:
+            dispersion = 1.0
+
+        # Final familiarity score
+        familiarity = (
+            coverage_weight * coverage +
+            depth_weight * depth +
+            dispersion_weight * dispersion
+        )
+
+        results[(artist, album)] = {
+            "familiarity": round(familiarity, 4),
+            "coverage": round(coverage, 4),
+            "depth": round(depth, 4),
+            "dispersion": round(dispersion, 4),
+            "unique_tracks": unique_tracks,
+            "total_plays": total_plays,
+            "avg_plays_per_track": round(avg_plays, 2),
+        }
+
+    return results
+
+
 def get_albums_by_familiarity(
     df: pd.DataFrame,
     min_familiarity: float = 0.5,
@@ -412,3 +513,349 @@ def get_session_stats(df: pd.DataFrame, gap_minutes: int = 30) -> dict:
         "single_track_sessions": (tracks_per_session == 1).sum(),
         "multi_artist_sessions": (artists_per_session > 1).sum(),
     }
+
+
+def get_obsession_tracks(
+    df: pd.DataFrame,
+    min_plays: int = 20,
+    max_familiarity: float = 0.4,
+    max_tracks_heard: int = 3,
+    min_track_dominance: float = 0.5,
+) -> pd.DataFrame:
+    """Find tracks with high plays from albums with low familiarity.
+
+    These are "obsession tracks" - songs you put on repeat without
+    exploring the rest of the album.
+
+    A track qualifies as an obsession if ANY of these are true:
+    1. Album familiarity is low (< max_familiarity)
+    2. You've only heard a few tracks from the album (< max_tracks_heard)
+       AND this track dominates plays (> min_track_dominance)
+
+    Args:
+        df: DataFrame of scrobbles
+        min_plays: Minimum plays for a track to be considered (default: 20)
+        max_familiarity: Maximum album familiarity score (default: 0.4)
+        max_tracks_heard: Max tracks heard to count as "unexplored" (default: 3)
+        min_track_dominance: Min % of album plays for single-track obsession (default: 0.5)
+
+    Returns:
+        DataFrame with columns:
+        - artist, album, track, plays
+        - album_familiarity: Score 0-1 for the album
+        - tracks_on_album: How many tracks you've played from this album
+        - pct_of_album_plays: What % of album plays this track represents
+        - peak_years: Dominant year(s) of listening (years with 25%+ of plays)
+    """
+    # Filter to rows with albums
+    df_albums = df[df["album"] != ""].copy()
+
+    if df_albums.empty:
+        return pd.DataFrame()
+
+    # Get album familiarity scores
+    familiarity = get_album_familiarity(df)
+
+    # Get track-level play counts
+    track_plays = (
+        df_albums.groupby(["artist", "album", "track"])
+        .size()
+        .reset_index(name="plays")
+    )
+
+    # Get year breakdown for each track (for peak years calculation)
+    track_years = (
+        df_albums.groupby(["artist", "album", "track", "year"])
+        .size()
+        .reset_index(name="year_plays")
+    )
+
+    # Get album-level stats
+    album_stats = track_plays.groupby(["artist", "album"]).agg(
+        tracks_on_album=("track", "count"),
+        total_album_plays=("plays", "sum"),
+    ).reset_index()
+
+    # Merge track plays with album stats
+    result = track_plays.merge(album_stats, on=["artist", "album"])
+
+    # Add familiarity scores
+    result["album_familiarity"] = result.apply(
+        lambda r: familiarity.get((r["artist"], r["album"]), 0.0), axis=1
+    )
+
+    # Calculate % of album plays
+    result["pct_of_album_plays"] = (
+        result["plays"] / result["total_album_plays"] * 100
+    ).round(1)
+
+    # Filter to obsession tracks:
+    # Either low familiarity OR (few tracks heard AND this track dominates)
+    obsessions = result[
+        (result["plays"] >= min_plays) &
+        (
+            (result["album_familiarity"] < max_familiarity) |
+            (
+                (result["tracks_on_album"] <= max_tracks_heard) &
+                (result["pct_of_album_plays"] >= min_track_dominance * 100)
+            )
+        )
+    ].copy()
+
+    # Calculate peak years for each obsession track
+    def get_peak_years(row):
+        track_year_data = track_years[
+            (track_years["artist"] == row["artist"]) &
+            (track_years["album"] == row["album"]) &
+            (track_years["track"] == row["track"])
+        ]
+        if track_year_data.empty:
+            return []
+        total = row["plays"]
+        peak_threshold = total * 0.25
+        peaks = track_year_data[track_year_data["year_plays"] >= peak_threshold]
+        return sorted(peaks["year"].astype(int).tolist())
+
+    obsessions["peak_years"] = obsessions.apply(get_peak_years, axis=1)
+
+    # Sort by plays descending
+    obsessions = obsessions.sort_values("plays", ascending=False)
+
+    # Select and reorder columns
+    return obsessions[[
+        "artist", "album", "track", "plays",
+        "album_familiarity", "tracks_on_album", "pct_of_album_plays", "peak_years"
+    ]]
+
+
+def get_one_track_artists(
+    df: pd.DataFrame,
+    min_concentration: float = 0.7,
+    max_other_tracks: int = 3,
+    min_top_track_plays: int = 10,
+) -> pd.DataFrame:
+    """Find artists where one track dominates all plays.
+
+    These are "one-track artists" - artists where you've only really
+    engaged with a single song.
+
+    Args:
+        df: DataFrame of scrobbles
+        min_concentration: Min % of plays on top track (default: 0.7 = 70%)
+        max_other_tracks: Max other tracks played (default: 3)
+        min_top_track_plays: Min plays on the top track (default: 10)
+
+    Returns:
+        DataFrame with columns:
+        - artist, top_track, top_track_album
+        - top_track_plays, total_plays, other_tracks
+        - concentration: % of plays on top track
+        - peak_years: Dominant year(s) of listening (years with 25%+ of plays)
+        - first_year, last_year: Range of listening
+    """
+    # Get track-level play counts per artist
+    track_plays = (
+        df.groupby(["artist", "track", "album"])
+        .size()
+        .reset_index(name="plays")
+    )
+
+    # For each artist, find their top track and stats
+    artist_stats = []
+
+    for artist in track_plays["artist"].unique():
+        artist_tracks = track_plays[track_plays["artist"] == artist].copy()
+        artist_tracks = artist_tracks.sort_values("plays", ascending=False)
+
+        total_plays = artist_tracks["plays"].sum()
+        top_row = artist_tracks.iloc[0]
+        top_track = top_row["track"]
+        top_track_album = top_row["album"]
+        top_track_plays = top_row["plays"]
+        other_tracks = len(artist_tracks) - 1
+
+        concentration = top_track_plays / total_plays if total_plays > 0 else 0
+
+        # Get year breakdown for the top track
+        top_track_plays_df = df[
+            (df["artist"] == artist) & (df["track"] == top_track)
+        ]
+        year_counts = top_track_plays_df.groupby("year").size()
+
+        # Find peak years (years with 25%+ of the track's plays)
+        peak_threshold = top_track_plays * 0.25
+        peak_years = sorted([
+            int(y) for y, c in year_counts.items() if c >= peak_threshold
+        ])
+
+        # Get year range
+        first_year = int(year_counts.index.min()) if len(year_counts) > 0 else None
+        last_year = int(year_counts.index.max()) if len(year_counts) > 0 else None
+
+        artist_stats.append({
+            "artist": artist,
+            "top_track": top_track,
+            "top_track_album": top_track_album,
+            "top_track_plays": top_track_plays,
+            "total_plays": total_plays,
+            "other_tracks": other_tracks,
+            "concentration": round(concentration, 3),
+            "peak_years": peak_years,
+            "first_year": first_year,
+            "last_year": last_year,
+        })
+
+    result = pd.DataFrame(artist_stats)
+
+    if result.empty:
+        return result
+
+    # Filter to one-track artists
+    one_track = result[
+        (result["concentration"] >= min_concentration) &
+        (result["other_tracks"] <= max_other_tracks) &
+        (result["top_track_plays"] >= min_top_track_plays)
+    ].copy()
+
+    # Sort by top track plays descending
+    return one_track.sort_values("top_track_plays", ascending=False)
+
+
+def get_ep_single_artists(
+    df: pd.DataFrame,
+    musicbrainz_lookup: callable,
+    min_non_album_ratio: float = 0.5,
+    min_total_plays: int = 20,
+) -> pd.DataFrame:
+    """Find artists where most plays come from non-album releases.
+
+    These are "EP/single artists" - typically electronic producers,
+    remixers, or artists who don't make traditional albums.
+
+    Args:
+        df: DataFrame of scrobbles
+        musicbrainz_lookup: Function(artist, album) -> ReleaseInfo or None
+        min_non_album_ratio: Min ratio of non-album plays (default: 0.5 = 50%)
+        min_total_plays: Min total plays for artist (default: 20)
+
+    Returns:
+        DataFrame with columns:
+        - artist
+        - album_plays: Plays from release_type="album"
+        - ep_single_plays: Plays from EPs, singles, etc.
+        - unknown_plays: Plays from releases not in MusicBrainz
+        - non_album_ratio: Ratio of non-album plays
+        - top_non_album: Top non-album release
+        - top_non_album_track: Top track from non-album releases
+    """
+    # Filter to rows with albums (releases)
+    df_albums = df[df["album"] != ""].copy()
+
+    if df_albums.empty:
+        return pd.DataFrame()
+
+    # Get play counts per artist/album
+    album_plays = (
+        df_albums.groupby(["artist", "album"])
+        .size()
+        .reset_index(name="plays")
+    )
+
+    # Get top track per album for display
+    track_plays = (
+        df_albums.groupby(["artist", "album", "track"])
+        .size()
+        .reset_index(name="track_plays")
+    )
+    top_tracks = (
+        track_plays.sort_values("track_plays", ascending=False)
+        .groupby(["artist", "album"])
+        .first()
+        .reset_index()[["artist", "album", "track"]]
+    )
+    album_plays = album_plays.merge(top_tracks, on=["artist", "album"], how="left")
+
+    # Look up release types (this is the slow part)
+    release_types = {}
+    for _, row in album_plays.iterrows():
+        artist, album = row["artist"], row["album"]
+        key = (artist, album)
+        if key not in release_types:
+            info = musicbrainz_lookup(artist, album)
+            release_types[key] = info.release_type if info else None
+
+    album_plays["release_type"] = album_plays.apply(
+        lambda r: release_types.get((r["artist"], r["album"])), axis=1
+    )
+
+    # Categorize: album vs non-album (ep, single, etc.)
+    album_types = {"album"}
+    non_album_types = {"ep", "single", "broadcast"}
+
+    def categorize(rt):
+        if rt is None:
+            return "unknown"
+        elif rt in album_types:
+            return "album"
+        elif rt in non_album_types:
+            return "non_album"
+        else:
+            return "other"  # compilation, live, remix, etc.
+
+    album_plays["category"] = album_plays["release_type"].apply(categorize)
+
+    # Aggregate by artist
+    artist_stats = []
+
+    for artist in album_plays["artist"].unique():
+        artist_data = album_plays[album_plays["artist"] == artist]
+
+        album_play_count = artist_data[artist_data["category"] == "album"]["plays"].sum()
+        non_album_play_count = artist_data[artist_data["category"] == "non_album"]["plays"].sum()
+        unknown_play_count = artist_data[artist_data["category"] == "unknown"]["plays"].sum()
+        other_play_count = artist_data[artist_data["category"] == "other"]["plays"].sum()
+
+        total = album_play_count + non_album_play_count + unknown_play_count + other_play_count
+
+        # Find top non-album release
+        non_album_releases = artist_data[artist_data["category"] == "non_album"]
+        if not non_album_releases.empty:
+            top_row = non_album_releases.sort_values("plays", ascending=False).iloc[0]
+            top_non_album = top_row["album"]
+            top_non_album_track = top_row["track"]
+        else:
+            top_non_album = None
+            top_non_album_track = None
+
+        # Calculate ratio (excluding unknown)
+        known_total = album_play_count + non_album_play_count
+        if known_total > 0:
+            non_album_ratio = non_album_play_count / known_total
+        else:
+            non_album_ratio = 0
+
+        artist_stats.append({
+            "artist": artist,
+            "album_plays": int(album_play_count),
+            "ep_single_plays": int(non_album_play_count),
+            "unknown_plays": int(unknown_play_count),
+            "total_plays": int(total),
+            "non_album_ratio": round(non_album_ratio, 3),
+            "top_non_album": top_non_album,
+            "top_non_album_track": top_non_album_track,
+        })
+
+    result = pd.DataFrame(artist_stats)
+
+    if result.empty:
+        return result
+
+    # Filter to EP/single-heavy artists
+    ep_artists = result[
+        (result["non_album_ratio"] >= min_non_album_ratio) &
+        (result["total_plays"] >= min_total_plays) &
+        (result["ep_single_plays"] > 0)  # Must have some EP/single plays
+    ].copy()
+
+    # Sort by EP/single plays descending
+    return ep_artists.sort_values("ep_single_plays", ascending=False)

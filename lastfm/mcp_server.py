@@ -62,6 +62,10 @@ class AnalysisState:
         self.critics_embeddings = None  # CriticsEmbeddings from critics lists
         self.critic_vectors = None  # CriticVectorEmbeddings for alignment
         self._critics_cache: dict = {}  # year -> critics data
+        # Indices for fast critic lookups (built lazily)
+        self._album_critics_index: Optional[dict] = None  # (artist_norm, album_norm) -> [{critic, publication, year, rank}]
+        self._critic_picks_index: Optional[dict] = None   # critic_name -> [{artist, album, year, rank}]
+        self._listened_albums_cache: Optional[set] = None  # Cached set of (artist, album) tuples user has heard
 
     def is_loaded(self) -> bool:
         return self.df is not None
@@ -123,6 +127,80 @@ class AnalysisState:
             if path.exists():
                 years.append(y)
         return years
+
+    def _build_critics_indices(self):
+        """Build indices for fast critic lookups. Called lazily on first use."""
+        if self._album_critics_index is not None:
+            return  # Already built
+
+        self._album_critics_index = {}  # (artist_norm, album_norm) -> [{critic, publication, year, rank}]
+        self._critic_picks_index = {}   # critic_name -> [{artist, album, year, rank}]
+
+        for year in self.get_all_critics_years():
+            critics_data = self.get_critics_data(year)
+            for critic_list in critics_data:
+                critic = critic_list.get("critic", "Unknown")
+                publication = critic_list.get("publication", "Unknown")
+
+                if critic not in self._critic_picks_index:
+                    self._critic_picks_index[critic] = {
+                        "publication": publication,
+                        "picks": [],
+                    }
+
+                for album in critic_list.get("albums", []):
+                    artist = album.get("artist", "")
+                    title = album.get("title", "")
+                    rank = album.get("rank")
+
+                    if not artist or not title:
+                        continue
+
+                    # Add to album -> critics index
+                    key = (
+                        crossref.normalize_for_matching(artist),
+                        crossref.normalize_for_matching(title),
+                    )
+                    if key not in self._album_critics_index:
+                        self._album_critics_index[key] = {
+                            "artist": artist,
+                            "album": title,
+                            "critics": [],
+                        }
+                    self._album_critics_index[key]["critics"].append({
+                        "critic": critic,
+                        "publication": publication,
+                        "year": year,
+                        "rank": rank,
+                    })
+
+                    # Add to critic -> picks index
+                    self._critic_picks_index[critic]["picks"].append({
+                        "artist": artist,
+                        "album": title,
+                        "year": year,
+                        "rank": rank,
+                    })
+
+    def get_album_critics_index(self) -> dict:
+        """Get album -> critics index, building if needed."""
+        self._build_critics_indices()
+        return self._album_critics_index
+
+    def get_critic_picks_index(self) -> dict:
+        """Get critic -> picks index, building if needed."""
+        self._build_critics_indices()
+        return self._critic_picks_index
+
+    def get_listened_albums(self, min_familiarity: float = 0.4) -> set:
+        """Get set of (artist_norm, album_norm) tuples user has heard."""
+        if self._listened_albums_cache is None:
+            listened = data.get_albums_by_familiarity(self.df, min_familiarity=min_familiarity)
+            self._listened_albums_cache = {
+                (crossref.normalize_for_matching(a), crossref.normalize_for_matching(t))
+                for a, t in listened
+            }
+        return self._listened_albums_cache
 
 
 # Global state instance
@@ -371,8 +449,31 @@ def _analyze_single_artist(df: "pd.DataFrame", artist: str) -> dict:
     plays_by_year = artist_plays.groupby("year").size().to_dict()
     peak_year = max(plays_by_year, key=plays_by_year.get) if plays_by_year else None
 
-    # Albums played
+    # Albums played with detailed familiarity metrics
     albums = artist_plays.groupby("album").size().sort_values(ascending=False)
+
+    # Get detailed familiarity breakdown for this artist's albums
+    familiarity_details = data.get_album_familiarity_details(artist_plays)
+
+    albums_with_metrics = []
+    for album, plays in albums.head(10).items():
+        album_info = {
+            "album": album,
+            "plays": int(plays),
+        }
+        # Add familiarity metrics if available
+        key = (actual_name, album)
+        if key in familiarity_details:
+            metrics = familiarity_details[key]
+            album_info.update({
+                "familiarity": metrics["familiarity"],
+                "coverage": metrics["coverage"],
+                "depth": metrics["depth"],
+                "dispersion": metrics["dispersion"],
+                "unique_tracks": metrics["unique_tracks"],
+                "avg_plays_per_track": metrics["avg_plays_per_track"],
+            })
+        albums_with_metrics.append(album_info)
 
     # Similar artists in both spaces
     user_similar = []
@@ -414,10 +515,7 @@ def _analyze_single_artist(df: "pd.DataFrame", artist: str) -> dict:
         "years_active": (last_play.year - first_play.year + 1) if first_play and last_play else 0,
         "plays_by_year": plays_by_year,
         "peak_year": peak_year,
-        "albums_played": [
-            {"album": album, "plays": int(plays)}
-            for album, plays in albums.head(10).items()
-        ],
+        "albums_played": albums_with_metrics,
         "similar_from_listening": user_similar,
         "similar_from_critics": critics_similar,
         "critics_who_listed": artist_critics[:10],
@@ -1162,6 +1260,874 @@ def get_discovery_context(artist: str) -> dict:
         })
     except Exception as e:
         return {"error": f"Exception in get_discovery_context: {type(e).__name__}: {str(e)}"}
+
+
+# =============================================================================
+# CRITICS NARRATIVE TOOLS - Rich, coarse-grained tools for storytelling
+# =============================================================================
+
+@mcp.tool
+def explore_critics_world(year: Optional[int] = None) -> dict:
+    """Your complete relationship with music criticism in one call.
+
+    Returns everything needed to tell the story of how your taste aligns
+    with critics: overall stats, taste-twin critics with their picks,
+    weighted recommendations, and albums where you matched the critics.
+
+    Args:
+        year: Focus on a specific year (None = all years 2011-2025)
+    """
+    _ensure_loaded()
+
+    # Determine years to analyze
+    if year is not None:
+        years = [year] if year in _state.get_all_critics_years() else []
+    else:
+        years = _state.get_all_critics_years()
+
+    if not years:
+        return {"error": f"No critics data available for year {year}"}
+
+    # Get user's listened albums
+    listened_albums = _state.get_listened_albums()
+
+    # Build album index and critic picks index
+    album_index = _state.get_album_critics_index()
+    critic_index = _state.get_critic_picks_index()
+
+    # Filter indices by year if specified
+    if year is not None:
+        # Filter album index to only include critics from specified year
+        filtered_album_index = {}
+        for key, album_data in album_index.items():
+            filtered_critics = [c for c in album_data["critics"] if c["year"] == year]
+            if filtered_critics:
+                filtered_album_index[key] = {
+                    "artist": album_data["artist"],
+                    "album": album_data["album"],
+                    "critics": filtered_critics,
+                }
+        album_index = filtered_album_index
+
+    # Calculate overall stats
+    total_acclaimed = len(album_index)
+    you_heard = sum(1 for key in album_index if key in listened_albums)
+    you_missed = total_acclaimed - you_heard
+
+    # Calculate per-critic alignment
+    critic_alignment = []
+    for critic_name, critic_data in critic_index.items():
+        picks = critic_data["picks"]
+        if year is not None:
+            picks = [p for p in picks if p["year"] == year]
+
+        if not picks:
+            continue
+
+        heard = 0
+        missed = 0
+        shared_albums = []
+        recommendations = []
+
+        for pick in picks:
+            key = (
+                crossref.normalize_for_matching(pick["artist"]),
+                crossref.normalize_for_matching(pick["album"]),
+            )
+            if key in listened_albums:
+                heard += 1
+                if len(shared_albums) < 5:
+                    shared_albums.append({
+                        "artist": pick["artist"],
+                        "album": pick["album"],
+                        "year": pick["year"],
+                    })
+            else:
+                missed += 1
+                if len(recommendations) < 5:
+                    recommendations.append({
+                        "artist": pick["artist"],
+                        "album": pick["album"],
+                        "year": pick["year"],
+                    })
+
+        total_picks = heard + missed
+        if total_picks > 0:
+            critic_alignment.append({
+                "name": critic_name,
+                "publication": critic_data["publication"],
+                "alignment_score": round(heard / total_picks, 3),
+                "their_picks_you_heard": heard,
+                "their_picks_you_missed": missed,
+                "top_shared_albums": shared_albums,
+                "top_recommendations": recommendations,
+            })
+
+    # Sort by alignment score
+    critic_alignment.sort(key=lambda x: -x["alignment_score"])
+    taste_twins = critic_alignment[:15]
+
+    # Build weighted recommendations (albums endorsed by aligned critics)
+    unheard_albums = {}
+    for key, album_data in album_index.items():
+        if key in listened_albums:
+            continue
+
+        critics_list = album_data["critics"]
+        if year is not None:
+            critics_list = [c for c in critics_list if c["year"] == year]
+
+        if not critics_list:
+            continue
+
+        # Calculate weighted score based on aligned critics
+        score = 0
+        endorsers = []
+        for c in critics_list:
+            # Find this critic's alignment score
+            critic_info = next((x for x in critic_alignment if x["name"] == c["critic"]), None)
+            if critic_info:
+                score += critic_info["alignment_score"]
+                if len(endorsers) < 5:
+                    endorsers.append(c["critic"])
+
+        unheard_albums[key] = {
+            "artist": album_data["artist"],
+            "album": album_data["album"],
+            "year": critics_list[0]["year"] if critics_list else None,
+            "score": round(score, 2),
+            "endorsed_by": endorsers,
+            "total_critics": len(critics_list),
+        }
+
+    # Sort by weighted score
+    weighted_recs = sorted(unheard_albums.values(), key=lambda x: -x["score"])[:20]
+
+    # Build validated taste (albums you loved that critics also loved)
+    validated = []
+    df = _state.df
+    for key, album_data in album_index.items():
+        if key not in listened_albums:
+            continue
+
+        critics_list = album_data["critics"]
+        if year is not None:
+            critics_list = [c for c in critics_list if c["year"] == year]
+
+        if not critics_list:
+            continue
+
+        # Get user's play data for this album
+        artist_norm, album_norm = key
+        album_plays = df[
+            (df["artist"].str.lower().str.strip() == artist_norm) &
+            (df["album"].str.lower().str.strip() == album_norm)
+        ]
+
+        if len(album_plays) == 0:
+            continue
+
+        first_play = album_plays["timestamp"].min()
+        total_plays = len(album_plays)
+
+        validated.append({
+            "artist": album_data["artist"],
+            "album": album_data["album"],
+            "your_plays": total_plays,
+            "critics_count": len(critics_list),
+            "your_discovery": first_play.strftime("%Y-%m-%d"),
+            "critics_year": critics_list[0]["year"],
+        })
+
+    # Sort by play count
+    validated.sort(key=lambda x: -x["your_plays"])
+    validated = validated[:20]
+
+    # Count unique critics
+    unique_critics = set()
+    for album_data in album_index.values():
+        for c in album_data["critics"]:
+            if year is None or c["year"] == year:
+                unique_critics.add(c["critic"])
+
+    return _to_serializable({
+        "summary": {
+            "total_critics": len(unique_critics),
+            "years_covered": years,
+            "your_overall_alignment": round(you_heard / total_acclaimed * 100, 1) if total_acclaimed > 0 else 0,
+            "total_acclaimed_albums": total_acclaimed,
+            "you_heard": you_heard,
+            "you_missed": you_missed,
+        },
+        "taste_twin_critics": taste_twins,
+        "weighted_recommendations": weighted_recs,
+        "your_validated_taste": validated,
+    })
+
+
+@mcp.tool
+def get_album_acclaim(artist: str, album: str, year: Optional[int] = None) -> dict:
+    """The critical story of a specific album.
+
+    Returns all critics who listed this album, your listening relationship
+    with it, and similar acclaimed albums you might like.
+
+    Args:
+        artist: Artist name
+        album: Album name
+        year: Filter to a specific year's lists (None = all years)
+    """
+    _ensure_loaded()
+
+    album_index = _state.get_album_critics_index()
+    listened_albums = _state.get_listened_albums()
+
+    # Find the album
+    key = (
+        crossref.normalize_for_matching(artist),
+        crossref.normalize_for_matching(album),
+    )
+
+    if key not in album_index:
+        return {
+            "artist": artist,
+            "album": album,
+            "acclaimed": False,
+            "message": "This album was not found in any critics' year-end lists (2011-2025)",
+        }
+
+    album_data = album_index[key]
+    critics_list = album_data["critics"]
+
+    if year is not None:
+        critics_list = [c for c in critics_list if c["year"] == year]
+        if not critics_list:
+            return {
+                "artist": album_data["artist"],
+                "album": album_data["album"],
+                "acclaimed": False,
+                "message": f"This album was not listed by critics in {year}",
+            }
+
+    # Sort critics by rank (if available)
+    critics_list_sorted = sorted(critics_list, key=lambda x: (x["year"], x["rank"] or 999))
+
+    # Get years listed
+    years_listed = sorted(set(c["year"] for c in critics_list))
+
+    # Check if user has listened
+    in_library = key in listened_albums
+    user_relationship = None
+
+    if in_library:
+        df = _state.df
+        album_plays = df[
+            (df["artist"].str.lower().str.strip() == key[0]) &
+            (df["album"].str.lower().str.strip() == key[1])
+        ]
+        if len(album_plays) > 0:
+            first_play = album_plays["timestamp"].min()
+            total_plays = len(album_plays)
+
+            # Find peak month
+            monthly = album_plays.groupby(album_plays["timestamp"].dt.to_period("M")).size()
+            peak_month = monthly.idxmax() if len(monthly) > 0 else None
+
+            # Calculate familiarity
+            familiarity_scores = data.get_album_familiarity(df)
+            familiarity = familiarity_scores.get((album_data["artist"], album_data["album"]), 0)
+
+            user_relationship = {
+                "first_play": first_play.strftime("%Y-%m-%d"),
+                "total_plays": total_plays,
+                "peak_month": str(peak_month) if peak_month else None,
+                "familiarity_score": round(familiarity, 2),
+            }
+
+    # Find similar acclaimed albums
+    similar_acclaimed = []
+    if _state.critics_embeddings:
+        norm_artist = crossref.normalize_for_matching(artist)
+        if norm_artist in _state.critics_embeddings.artist_to_idx:
+            similar_artists = _state.critics_embeddings.find_similar(artist, top_n=10)
+            for sim_artist, _ in similar_artists:
+                sim_artist_norm = crossref.normalize_for_matching(sim_artist)
+                # Find acclaimed albums by this artist
+                for other_key, other_album in album_index.items():
+                    if other_key[0] == sim_artist_norm and other_key != key:
+                        similar_acclaimed.append({
+                            "artist": other_album["artist"],
+                            "album": other_album["album"],
+                            "critics": len(other_album["critics"]),
+                        })
+                        break
+                if len(similar_acclaimed) >= 5:
+                    break
+
+    return _to_serializable({
+        "artist": album_data["artist"],
+        "album": album_data["album"],
+        "acclaimed": True,
+        "total_critics": len(critics_list),
+        "years_listed": years_listed,
+        "critics_who_listed": [
+            {
+                "name": c["critic"],
+                "publication": c["publication"],
+                "year": c["year"],
+                "rank": c["rank"],
+            }
+            for c in critics_list_sorted
+        ],
+        "in_your_library": in_library,
+        "your_relationship": user_relationship,
+        "similar_acclaimed": similar_acclaimed,
+    })
+
+
+@mcp.tool
+def get_my_validated_albums(year: Optional[int] = None, limit: int = 50) -> dict:
+    """Albums where your taste matched the critics.
+
+    Returns albums you've listened to that were also critically acclaimed,
+    with rich context about your relationship with each.
+
+    Args:
+        year: Filter to albums from a specific critics year (None = all years)
+        limit: Maximum albums to return
+    """
+    _ensure_loaded()
+
+    album_index = _state.get_album_critics_index()
+    listened_albums = _state.get_listened_albums()
+    df = _state.df
+
+    validated = []
+    artist_counts = defaultdict(int)
+
+    for key, album_data in album_index.items():
+        if key not in listened_albums:
+            continue
+
+        critics_list = album_data["critics"]
+        if year is not None:
+            critics_list = [c for c in critics_list if c["year"] == year]
+
+        if not critics_list:
+            continue
+
+        # Get user's play data
+        artist_norm, album_norm = key
+        album_plays = df[
+            (df["artist"].str.lower().str.strip() == artist_norm) &
+            (df["album"].str.lower().str.strip() == album_norm)
+        ]
+
+        if len(album_plays) == 0:
+            continue
+
+        first_play = album_plays["timestamp"].min()
+        total_plays = len(album_plays)
+        critics_years = sorted(set(c["year"] for c in critics_list))
+
+        # Get top critics who listed it
+        top_critics = list(set(c["critic"] for c in critics_list))[:5]
+
+        # Check if discovered before year-end lists
+        first_critics_year = min(critics_years)
+        discovered_before = first_play.year < first_critics_year
+
+        validated.append({
+            "artist": album_data["artist"],
+            "album": album_data["album"],
+            "your_plays": total_plays,
+            "your_first_play": first_play.strftime("%Y-%m-%d"),
+            "critics_count": len(critics_list),
+            "critics_years": critics_years,
+            "top_critics": top_critics,
+            "you_discovered_before_critics": discovered_before,
+        })
+
+        artist_counts[album_data["artist"]] += 1
+
+    # Sort by play count
+    validated.sort(key=lambda x: -x["your_plays"])
+    validated = validated[:limit]
+
+    # Calculate insights
+    if validated:
+        avg_critics = sum(v["critics_count"] for v in validated) / len(validated)
+        most_validated_artist = max(artist_counts.items(), key=lambda x: x[1])[0] if artist_counts else None
+
+        # Find most aligned year
+        year_matches = defaultdict(int)
+        for v in validated:
+            for y in v["critics_years"]:
+                year_matches[y] += 1
+        most_aligned_year = max(year_matches.items(), key=lambda x: x[1])[0] if year_matches else None
+    else:
+        avg_critics = 0
+        most_aligned_year = None
+        most_validated_artist = None
+
+    return _to_serializable({
+        "period": str(year) if year else "all-time",
+        "total_matches": len(validated),
+        "albums": validated,
+        "insights": {
+            "avg_critics_per_match": round(avg_critics, 1),
+            "most_aligned_year": most_aligned_year,
+            "your_most_validated_artist": most_validated_artist,
+        },
+    })
+
+
+@mcp.tool
+def get_critic_profile(critic_name: str, year: Optional[int] = None) -> dict:
+    """Deep dive on a specific critic's taste vs yours.
+
+    Returns their picks, your overlap, their recommendations for you,
+    and their signature artists.
+
+    Args:
+        critic_name: Name of the critic to analyze
+        year: Focus on a specific year (None = all years)
+    """
+    _ensure_loaded()
+
+    critic_index = _state.get_critic_picks_index()
+    listened_albums = _state.get_listened_albums()
+    df = _state.df
+
+    # Find the critic (case-insensitive)
+    critic_key = None
+    for name in critic_index:
+        if name.lower() == critic_name.lower():
+            critic_key = name
+            break
+
+    if critic_key is None:
+        # Try partial match
+        for name in critic_index:
+            if critic_name.lower() in name.lower():
+                critic_key = name
+                break
+
+    if critic_key is None:
+        return {"error": f"Critic '{critic_name}' not found. Try searching with a partial name."}
+
+    critic_data = critic_index[critic_key]
+    picks = critic_data["picks"]
+
+    if year is not None:
+        picks = [p for p in picks if p["year"] == year]
+        if not picks:
+            return {
+                "critic": critic_key,
+                "publication": critic_data["publication"],
+                "error": f"No picks found for {year}",
+            }
+
+    # Calculate alignment
+    heard = []
+    missed = []
+    for pick in picks:
+        key = (
+            crossref.normalize_for_matching(pick["artist"]),
+            crossref.normalize_for_matching(pick["album"]),
+        )
+        if key in listened_albums:
+            # Get play count
+            album_plays = df[
+                (df["artist"].str.lower().str.strip() == key[0]) &
+                (df["album"].str.lower().str.strip() == key[1])
+            ]
+            heard.append({
+                "artist": pick["artist"],
+                "album": pick["album"],
+                "year": pick["year"],
+                "your_plays": len(album_plays),
+            })
+        else:
+            missed.append({
+                "artist": pick["artist"],
+                "album": pick["album"],
+                "year": pick["year"],
+            })
+
+    # Sort heard by plays, missed by year
+    heard.sort(key=lambda x: -x["your_plays"])
+    missed.sort(key=lambda x: -x["year"])
+
+    # Calculate rank among all critics
+    all_critics_alignment = []
+    for name, cdata in critic_index.items():
+        cpicks = cdata["picks"]
+        if year is not None:
+            cpicks = [p for p in cpicks if p["year"] == year]
+        if not cpicks:
+            continue
+
+        overlap = sum(
+            1 for p in cpicks
+            if (crossref.normalize_for_matching(p["artist"]),
+                crossref.normalize_for_matching(p["album"])) in listened_albums
+        )
+        all_critics_alignment.append((name, overlap / len(cpicks)))
+
+    all_critics_alignment.sort(key=lambda x: -x[1])
+    rank = next((i + 1 for i, (name, _) in enumerate(all_critics_alignment) if name == critic_key), None)
+
+    # Find signature artists (artists this critic picks more than others)
+    artist_mentions = defaultdict(int)
+    for pick in picks:
+        artist_mentions[pick["artist"]] += 1
+
+    # Get artists they've listed multiple times
+    signature_artists = [
+        {
+            "artist": artist,
+            "times_listed": count,
+            "you_know": any(
+                (crossref.normalize_for_matching(artist), crossref.normalize_for_matching(p["album"])) in listened_albums
+                for p in picks if p["artist"] == artist
+            ),
+        }
+        for artist, count in sorted(artist_mentions.items(), key=lambda x: -x[1])
+        if count >= 2
+    ][:10]
+
+    # Build picks by year
+    picks_by_year = defaultdict(list)
+    for pick in sorted(picks, key=lambda x: (x["year"], x["rank"] or 999)):
+        picks_by_year[pick["year"]].append({
+            "artist": pick["artist"],
+            "album": pick["album"],
+            "rank": pick["rank"],
+        })
+
+    years_active = sorted(set(p["year"] for p in critic_data["picks"]))
+
+    return _to_serializable({
+        "critic": critic_key,
+        "publication": critic_data["publication"],
+        "years_active": years_active,
+        "total_albums_picked": len(critic_data["picks"]),
+        "alignment_with_you": {
+            "score": round(len(heard) / (len(heard) + len(missed)), 3) if (heard or missed) else 0,
+            "albums_you_heard": len(heard),
+            "albums_you_missed": len(missed),
+            "your_rank_among_critics": rank,
+        },
+        "picks_you_loved": heard[:15],
+        "picks_you_missed": missed[:15],
+        "their_signature_artists": signature_artists,
+        "picks_by_year": dict(picks_by_year),
+    })
+
+
+@mcp.tool
+def search_critics_for_artist(artist: str, year: Optional[int] = None) -> dict:
+    """An artist's complete critical history.
+
+    Returns all albums by this artist that were critically acclaimed,
+    which critics championed them, and your relationship with the artist.
+
+    Args:
+        artist: Artist name to search for
+        year: Filter to a specific year (None = all years)
+    """
+    _ensure_loaded()
+
+    album_index = _state.get_album_critics_index()
+    critic_index = _state.get_critic_picks_index()
+    listened_albums = _state.get_listened_albums()
+    df = _state.df
+
+    artist_norm = crossref.normalize_for_matching(artist)
+
+    # Find all albums by this artist in critics lists
+    artist_albums = []
+    for key, album_data in album_index.items():
+        if key[0] != artist_norm:
+            continue
+
+        critics_list = album_data["critics"]
+        if year is not None:
+            critics_list = [c for c in critics_list if c["year"] == year]
+
+        if not critics_list:
+            continue
+
+        # Check if in user's library
+        in_library = key in listened_albums
+        user_plays = 0
+        if in_library:
+            album_plays = df[
+                (df["artist"].str.lower().str.strip() == key[0]) &
+                (df["album"].str.lower().str.strip() == key[1])
+            ]
+            user_plays = len(album_plays)
+
+        # Get year and top critics
+        album_year = critics_list[0]["year"]
+        top_critics = list(set(c["critic"] for c in critics_list))[:5]
+
+        artist_albums.append({
+            "album": album_data["album"],
+            "year": album_year,
+            "critics_count": len(critics_list),
+            "top_critics": top_critics,
+            "in_your_library": in_library,
+            "your_plays": user_plays,
+        })
+
+    if not artist_albums:
+        return {
+            "artist": artist,
+            "found": False,
+            "message": f"No albums by '{artist}' found in critics' year-end lists",
+        }
+
+    # Sort by critics count
+    artist_albums.sort(key=lambda x: -x["critics_count"])
+
+    # Find actual artist name from data
+    actual_artist = album_index.get(
+        (artist_norm, crossref.normalize_for_matching(artist_albums[0]["album"])),
+        {}
+    ).get("artist", artist)
+
+    # Get years listed
+    years_listed = sorted(set(a["year"] for a in artist_albums))
+
+    # Find critics who champion this artist (listed multiple albums)
+    critic_artist_counts = defaultdict(int)
+    for key, album_data in album_index.items():
+        if key[0] != artist_norm:
+            continue
+        for c in album_data["critics"]:
+            if year is None or c["year"] == year:
+                critic_artist_counts[c["critic"]] += 1
+
+    champions = []
+    for critic_name, count in sorted(critic_artist_counts.items(), key=lambda x: -x[1]):
+        if count >= 1:
+            # Get critic alignment
+            critic_data = critic_index.get(critic_name, {})
+            picks = critic_data.get("picks", [])
+            if picks:
+                overlap = sum(
+                    1 for p in picks
+                    if (crossref.normalize_for_matching(p["artist"]),
+                        crossref.normalize_for_matching(p["album"])) in listened_albums
+                )
+                alignment = overlap / len(picks)
+            else:
+                alignment = 0
+
+            champions.append({
+                "name": critic_name,
+                "times_listed": count,
+                "alignment_with_you": round(alignment, 3),
+            })
+
+    # Get user's relationship with artist
+    artist_plays = df[df["artist"].str.lower().str.strip() == artist_norm]
+    user_relationship = None
+    if len(artist_plays) > 0:
+        first_play = artist_plays["timestamp"].min()
+        peak_year = artist_plays.groupby("year").size().idxmax()
+        user_relationship = {
+            "first_play": first_play.strftime("%Y-%m-%d"),
+            "total_plays": len(artist_plays),
+            "peak_year": int(peak_year),
+        }
+
+    return _to_serializable({
+        "artist": actual_artist,
+        "found": True,
+        "total_critical_mentions": sum(a["critics_count"] for a in artist_albums),
+        "years_listed": years_listed,
+        "albums_listed": artist_albums,
+        "critics_who_champion": champions[:10],
+        "your_relationship": user_relationship,
+    })
+
+
+# =============================================================================
+# TRACK OBSESSION TOOLS - Identify single-track fixations
+# =============================================================================
+
+@mcp.tool
+def get_obsession_tracks(
+    year: Optional[int] = None,
+    min_plays: int = 20,
+) -> dict:
+    """Find tracks you obsessed over without exploring their albums.
+
+    Returns tracks with high play counts where album familiarity is low -
+    songs you put on repeat but never explored further.
+
+    Args:
+        year: Filter to specific year (None = all time)
+        min_plays: Minimum plays for a track to be considered (default: 20)
+    """
+    _ensure_loaded()
+
+    df = _state.df
+    if year:
+        df = data.filter_by_year(df, year)
+
+    result = data.get_obsession_tracks(df, min_plays=min_plays, max_familiarity=0.4)
+
+    if result.empty:
+        return _to_serializable({
+            "period": year or "all-time",
+            "obsession_tracks": [],
+            "count": 0,
+        })
+
+    tracks = []
+    for _, row in result.head(50).iterrows():
+        tracks.append({
+            "artist": row["artist"],
+            "album": row["album"],
+            "track": row["track"],
+            "plays": int(row["plays"]),
+            "peak_years": row.get("peak_years", []),
+            "album_familiarity": round(float(row["album_familiarity"]), 3),
+            "tracks_on_album": int(row["tracks_on_album"]),
+            "pct_of_album_plays": round(float(row["pct_of_album_plays"]), 1),
+        })
+
+    return _to_serializable({
+        "period": year or "all-time",
+        "obsession_tracks": tracks,
+        "count": len(result),
+        "insight": f"Found {len(result)} tracks with {min_plays}+ plays from low-familiarity albums",
+    })
+
+
+@mcp.tool
+def get_one_track_artists(
+    year: Optional[int] = None,
+    min_concentration: float = 0.7,
+) -> dict:
+    """Find artists where one track dominates your listening.
+
+    Returns artists where you've only really engaged with a single song -
+    your "one-hit" relationships.
+
+    Args:
+        year: Filter to specific year (None = all time)
+        min_concentration: Min % of plays on top track (default: 0.7 = 70%)
+    """
+    _ensure_loaded()
+
+    df = _state.df
+    if year:
+        df = data.filter_by_year(df, year)
+
+    result = data.get_one_track_artists(
+        df,
+        min_concentration=min_concentration,
+        min_top_track_plays=10,
+    )
+
+    if result.empty:
+        return _to_serializable({
+            "period": year or "all-time",
+            "one_track_artists": [],
+            "count": 0,
+        })
+
+    artists = []
+    for _, row in result.head(50).iterrows():
+        artists.append({
+            "artist": row["artist"],
+            "top_track": row["top_track"],
+            "top_track_album": row["top_track_album"],
+            "top_track_plays": int(row["top_track_plays"]),
+            "total_plays": int(row["total_plays"]),
+            "other_tracks": int(row["other_tracks"]),
+            "concentration": round(float(row["concentration"]), 3),
+            "peak_years": row.get("peak_years", []),
+            "first_year": row.get("first_year"),
+            "last_year": row.get("last_year"),
+        })
+
+    return _to_serializable({
+        "period": year or "all-time",
+        "one_track_artists": artists,
+        "count": len(result),
+        "insight": f"Found {len(result)} artists where {int(min_concentration*100)}%+ of plays are on one track",
+    })
+
+
+@mcp.tool
+def get_ep_single_artists(year: Optional[int] = None) -> dict:
+    """Find artists where you mainly listen to EPs/singles, not albums.
+
+    Returns artists who primarily release EPs and singles rather than
+    traditional albums - typical for electronic producers and remixers.
+
+    Requires MusicBrainz database to be downloaded.
+
+    Args:
+        year: Filter to specific year (None = all time)
+    """
+    _ensure_loaded()
+
+    # Check if MusicBrainz DB exists
+    if not musicbrainz_db.database_exists():
+        return {
+            "error": "MusicBrainz database not found",
+            "setup": "Run 'lastfm metadata download' to enable release type lookups",
+        }
+
+    df = _state.df
+    if year:
+        df = data.filter_by_year(df, year)
+
+    conn = musicbrainz_db.get_connection()
+
+    def lookup(artist: str, album: str):
+        return musicbrainz_db.lookup_release(artist, album, conn)
+
+    result = data.get_ep_single_artists(
+        df,
+        musicbrainz_lookup=lookup,
+        min_non_album_ratio=0.5,
+        min_total_plays=20,
+    )
+
+    conn.close()
+
+    if result.empty:
+        return _to_serializable({
+            "period": year or "all-time",
+            "ep_single_artists": [],
+            "count": 0,
+        })
+
+    artists = []
+    for _, row in result.head(50).iterrows():
+        artists.append({
+            "artist": row["artist"],
+            "album_plays": int(row["album_plays"]),
+            "ep_single_plays": int(row["ep_single_plays"]),
+            "non_album_ratio": round(float(row["non_album_ratio"]), 3),
+            "top_non_album": row["top_non_album"],
+            "top_non_album_track": row["top_non_album_track"],
+        })
+
+    return _to_serializable({
+        "period": year or "all-time",
+        "ep_single_artists": artists,
+        "count": len(result),
+        "insight": f"Found {len(result)} artists where 50%+ of plays come from EPs/singles",
+    })
 
 
 # =============================================================================
