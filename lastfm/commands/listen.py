@@ -40,8 +40,10 @@ def listen_top(
     limit: int = typer.Option(20, "--limit", "-n", help="Number of results"),
     unselected: bool = typer.Option(False, "--unselected", "-u", help="Only show artists not picked by critics (requires --year)"),
     new_album: bool = typer.Option(False, "--new-album", "-a", help="Only artists with an album first heard that year"),
+    json_output: bool = typer.Option(False, "--json", help="Output as JSON"),
 ):
     """Show top artists, albums, or tracks by play count."""
+    import json
     # Get global options from context
     csv = ctx.obj.get("csv") if ctx.obj else None
     year = ctx.obj.get("year") if ctx.obj else None
@@ -216,6 +218,24 @@ def listen_top(
     else:
         console.print(f"[red]Unknown type: {what}. Use artists, albums, or tracks.[/red]")
         raise typer.Exit(1)
+
+    if json_output:
+        # Convert result DataFrame to JSON-friendly format
+        records = []
+        for idx, (_, row) in enumerate(result.iterrows()):
+            record = {"rank": idx + 1, "plays": int(row["plays"])}
+            if what == "artists":
+                record["artist"] = row["artist"]
+            elif what == "albums":
+                record["artist"] = row["artist"]
+                record["album"] = row["album"]
+            elif what == "tracks":
+                record["artist"] = row["artist"]
+                record["track"] = row["track"]
+            records.append(record)
+        output = {"type": what, "year": year, "results": records}
+        print(json.dumps(output, indent=2))
+        return
 
     console.print(table)
 

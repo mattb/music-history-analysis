@@ -71,8 +71,11 @@ app.add_typer(eval.app, name="eval", help="Evaluate embedding and recommendation
 @app.command()
 def stats(
     ctx: typer.Context,
+    json_output: bool = typer.Option(False, "--json", help="Output as JSON"),
 ):
     """Show overall listening statistics."""
+    import json
+
     # Get global options from context
     csv = ctx.obj.get("csv") if ctx.obj else None
     year = ctx.obj.get("year") if ctx.obj else None
@@ -81,19 +84,29 @@ def stats(
 
     if year:
         df = data.filter_by_year(df, year)
-        title = f"Listening Stats for {year}"
-    else:
-        title = "Overall Listening Stats"
 
     total_plays = len(df)
     unique_artists = df["artist"].nunique()
     unique_albums = df[df["album"] != ""]["album"].nunique()
     unique_tracks = df["track"].nunique()
+    date_start = df['timestamp'].min().strftime('%Y-%m-%d')
+    date_end = df['timestamp'].max().strftime('%Y-%m-%d')
 
-    date_range = f"{df['timestamp'].min():%Y-%m-%d} to {df['timestamp'].max():%Y-%m-%d}"
+    if json_output:
+        result = {
+            "year": year,
+            "date_range": {"start": date_start, "end": date_end},
+            "total_plays": total_plays,
+            "unique_artists": unique_artists,
+            "unique_albums": unique_albums,
+            "unique_tracks": unique_tracks,
+        }
+        print(json.dumps(result, indent=2))
+        return
 
+    title = f"Listening Stats for {year}" if year else "Overall Listening Stats"
     console.print(f"\n[bold]{title}[/bold]")
-    console.print(f"Date range: {date_range}")
+    console.print(f"Date range: {date_start} to {date_end}")
     console.print(f"Total plays: {total_plays:,}")
     console.print(f"Unique artists: {unique_artists:,}")
     console.print(f"Unique albums: {unique_albums:,}")
@@ -181,6 +194,461 @@ def fetch_scrobbles(
     except Exception as e:
         console.print(f"[red]Error:[/red] {e}")
         raise typer.Exit(1)
+
+
+@app.command()
+def doctor(
+    ctx: typer.Context,
+    json_output: bool = typer.Option(False, "--json", help="Output as JSON"),
+):
+    """Diagnose setup and show what's working and what's missing.
+
+    Checks for: CSV data, Last.fm API key, MusicBrainz database,
+    critics data, Spotify credentials, and embeddings cache.
+    """
+    import json
+    from . import musicbrainz_db, spotify as spotify_mod
+
+    checks = {}  # name -> {status: ok|missing|optional, details: str, fix: str|None}
+
+    # 1. Check CSV data
+    csvs = list(Path.cwd().glob("recenttracks-*.csv"))
+    if csvs:
+        csv_path = sorted(csvs)[-1]
+        try:
+            df = data.load_scrobbles(csv_path)
+            checks["csv_data"] = {"status": "ok", "details": f"{csv_path.name} ({len(df)} plays)"}
+        except Exception as e:
+            checks["csv_data"] = {"status": "missing", "details": f"{csv_path.name} (error: {e})",
+                                  "fix": "lastfm fetch YOUR_USERNAME"}
+    else:
+        checks["csv_data"] = {"status": "missing", "details": "Not found",
+                              "fix": "lastfm fetch YOUR_USERNAME"}
+
+    # 2. Check Last.fm API key
+    api_key = lastfm_api.get_api_key()
+    if api_key:
+        checks["lastfm_api_key"] = {"status": "ok", "details": f"Configured ({api_key[:8]}...)"}
+    else:
+        checks["lastfm_api_key"] = {"status": "optional", "details": "Not configured",
+                                    "fix": "lastfm fetch-api-key --key YOUR_KEY"}
+
+    # 3. Check MusicBrainz database
+    if musicbrainz_db.database_exists():
+        try:
+            db_stats = musicbrainz_db.get_database_stats()
+            checks["musicbrainz_db"] = {"status": "ok", "details": f"{db_stats.get('releases', 0)} releases"}
+        except Exception:
+            checks["musicbrainz_db"] = {"status": "ok", "details": "Present"}
+    else:
+        checks["musicbrainz_db"] = {"status": "missing", "details": "Not found",
+                                    "fix": "lastfm metadata download"}
+
+    # 4. Check Critics data
+    available_years = []
+    for year in range(2011, 2026):
+        if get_critics_path(year).exists():
+            available_years.append(year)
+
+    if available_years:
+        checks["critics_data"] = {"status": "ok", "details": f"{len(available_years)} years ({min(available_years)}-{max(available_years)})",
+                                  "years": available_years}
+    else:
+        checks["critics_data"] = {"status": "missing", "details": "No years found",
+                                  "fix": "lastfm critics fetch --year 2024"}
+
+    # 5. Check Spotify credentials
+    spotify_creds = spotify_mod.get_credentials()
+    if spotify_creds:
+        checks["spotify_credentials"] = {"status": "ok", "details": "Configured"}
+    else:
+        checks["spotify_credentials"] = {"status": "optional", "details": "Not configured",
+                                         "fix": "lastfm spotify auth --client-id X --client-secret Y"}
+
+    # 6. Check embeddings cache (if CSV exists)
+    if csvs:
+        from . import embeddings
+        cache_base = Path.home() / ".cache" / "lastfm-analysis"
+        csv_cache_id = embeddings.get_csv_cache_id(sorted(csvs)[-1])
+        user_emb_path = cache_base / csv_cache_id / "artist_embeddings_cooccurrence_W_minplays5.pkl"
+        critics_emb_path = cache_base / "critics_embeddings"
+
+        checks["user_embeddings"] = {
+            "status": "ok" if user_emb_path.exists() else "optional",
+            "details": "Cached" if user_emb_path.exists() else "Not cached (built on first use)"
+        }
+        checks["critics_embeddings"] = {
+            "status": "ok" if (critics_emb_path.exists() and any(critics_emb_path.glob("*.pkl"))) else "optional",
+            "details": "Cached" if (critics_emb_path.exists() and any(critics_emb_path.glob("*.pkl"))) else "Not cached (built on first use)"
+        }
+
+    # Count issues
+    issues = sum(1 for c in checks.values() if c["status"] == "missing")
+
+    if json_output:
+        result = {"checks": checks, "issues": issues}
+        print(json.dumps(result, indent=2))
+        return
+
+    # Pretty print
+    console.print("\n[bold cyan]Setup Status[/bold cyan]")
+    console.print("=" * 40)
+
+    status_icons = {"ok": "[green][OK][/green]", "missing": "[red][!!][/red]", "optional": "[dim][--][/dim]"}
+    labels = {
+        "csv_data": "CSV Data", "lastfm_api_key": "Last.fm API Key",
+        "musicbrainz_db": "MusicBrainz DB", "critics_data": "Critics Data",
+        "spotify_credentials": "Spotify Credentials", "user_embeddings": "User Embeddings",
+        "critics_embeddings": "Critics Embeddings",
+    }
+
+    for name, check in checks.items():
+        icon = status_icons[check["status"]]
+        label = labels.get(name, name)
+        console.print(f"{icon} {label}: {check['details']}")
+        if check.get("fix") and check["status"] != "ok":
+            console.print(f"     [dim]Run:[/dim] [cyan]{check['fix']}[/cyan]")
+
+    console.print()
+    if issues == 0:
+        console.print("[bold green]All set! No issues found.[/bold green]")
+    else:
+        console.print(f"[bold yellow]{issues} issue(s) found.[/bold yellow] Run the suggested commands to fix.")
+
+
+@app.command(name="surprise-me")
+def surprise_me(
+    ctx: typer.Context,
+    mode: str = typer.Option(
+        "adventurous", "--mode", "-m",
+        help="Mode: adventurous (new artists), familiar (similar to favorites), bridge (taste connectors)"
+    ),
+    json_output: bool = typer.Option(False, "--json", help="Output as JSON"),
+):
+    """Get one album recommendation based on your taste-aligned critics.
+
+    Uses multiple signals to pick the perfect album:
+    - Critic alignment (critics who share your taste)
+    - Artist similarity (in your listening space)
+    - Bridge detection (artists connecting your taste to critics)
+
+    Modes:
+    - adventurous: Prioritize new artists you've never heard
+    - familiar: Prioritize artists similar to your favorites
+    - bridge: Prioritize "bridge" artists that connect your taste to critical consensus
+    """
+    import json
+    import random
+    from . import crossref, embeddings
+
+    if mode not in ("adventurous", "familiar", "bridge"):
+        console.print(f"[red]Unknown mode '{mode}'. Use: adventurous, familiar, or bridge[/red]")
+        raise typer.Exit(1)
+
+    csv = ctx.obj.get("csv") if ctx.obj else None
+    fam = ctx.obj.get("familiarity", 0.4) if ctx.obj else 0.4
+
+    # Load scrobbles
+    try:
+        csv_path = get_csv_path(csv)
+        df = data.load_scrobbles(csv_path)
+    except typer.Exit:
+        if not json_output:
+            console.print("[red]No listening data found. Run 'lastfm doctor' to check setup.[/red]")
+        raise
+
+    if not json_output:
+        console.print(f"[dim]Loading taste profile (mode: {mode})...[/dim]")
+
+    # Get listened albums (to filter out)
+    listened_albums = data.get_listened_albums(df, min_familiarity=fam)
+    your_albums = set()
+    for artist, album in listened_albums:
+        key = (crossref.normalize_for_matching(artist),
+               crossref.normalize_for_matching(album))
+        your_albums.add(key)
+
+    # Track artist plays for context
+    your_artists = {}  # norm_artist -> plays
+    for _, row in df.iterrows():
+        artist = row.get("artist", "")
+        if artist:
+            artist_norm = crossref.normalize_for_matching(artist)
+            your_artists[artist_norm] = your_artists.get(artist_norm, 0) + 1
+
+    # Get top artists for similarity comparisons
+    top_artists = sorted(your_artists.items(), key=lambda x: -x[1])[:50]
+    top_artist_names = [a for a, _ in top_artists]
+
+    # === Load all embeddings ===
+
+    # 1. Critic vectors (for alignment)
+    critic_similarities = {}
+    try:
+        critic_vectors = embeddings.get_or_build_critic_vectors()
+        user_vector = critic_vectors.compute_user_vector(df, top_n_artists=100)
+        aligned_critics = critic_vectors.find_similar_critics(user_vector, top_n=30)
+        critic_similarities = {name: sim for name, sim, _ in aligned_critics}
+    except Exception as e:
+        if not json_output:
+            console.print(f"[yellow]Could not load critic vectors: {e}[/yellow]")
+
+    # 2. User embeddings (for artist similarity in YOUR space)
+    user_emb = None
+    try:
+        user_emb = embeddings.build_embeddings_from_csv(csv_path, min_plays=5)
+    except Exception as e:
+        if not json_output:
+            console.print(f"[yellow]Could not load user embeddings: {e}[/yellow]")
+
+    # 3. Critics embeddings (for bridge detection)
+    critics_emb = None
+    try:
+        critics_emb = embeddings.get_or_build_critics_embeddings()
+    except Exception as e:
+        if not json_output:
+            console.print(f"[yellow]Could not load critics embeddings: {e}[/yellow]")
+
+    # === Build artist similarity cache ===
+    # For each candidate artist, compute similarity to user's top artists
+
+    def get_artist_similarity(artist_name: str) -> tuple[float, list[str]]:
+        """Get similarity score and list of similar artists from user's library."""
+        if not user_emb:
+            return 0.0, []
+
+        # Check if artist exists in user embeddings (uses case-insensitive matching)
+        embedding = user_emb.get_embedding(artist_name)
+        if embedding is None:
+            return 0.0, []
+
+        try:
+            similar = user_emb.find_similar(artist_name, top_n=20)
+            # Find overlap with user's top artists
+            similar_from_top = []
+            total_sim = 0.0
+            for sim_artist, sim_score in similar:
+                sim_norm = crossref.normalize_for_matching(sim_artist)
+                if sim_norm in top_artist_names:
+                    similar_from_top.append(sim_artist)
+                    total_sim += sim_score
+            # Normalize to 0-1
+            avg_sim = total_sim / len(similar_from_top) if similar_from_top else 0.0
+            return avg_sim, similar_from_top[:3]
+        except Exception:
+            return 0.0, []
+
+    def is_bridge_artist(artist_name: str) -> tuple[bool, list[str], list[str]]:
+        """Check if artist appears in both user and critics embedding spaces."""
+        if not user_emb or not critics_emb:
+            return False, [], []
+
+        # Check both embedding spaces using their native methods
+        user_embedding = user_emb.get_embedding(artist_name)
+        critics_embedding = critics_emb.get_embedding(artist_name)
+
+        in_user = user_embedding is not None
+        in_critics = critics_embedding is not None
+
+        if not (in_user and in_critics):
+            return False, [], []
+
+        # Get similar artists in each space
+        user_similar = []
+        critics_similar = []
+
+        try:
+            user_sim = user_emb.find_similar(artist_name, top_n=5)
+            user_similar = [a for a, _ in user_sim]
+        except Exception:
+            pass
+
+        try:
+            critics_sim = critics_emb.find_similar(artist_name, top_n=5)
+            critics_similar = [a for a, _ in critics_sim]
+        except Exception:
+            pass
+
+        return True, user_similar[:3], critics_similar[:3]
+
+    # Find all available critics years
+    years_to_search = []
+    for y in range(2011, 2026):
+        if get_critics_path(y).exists():
+            years_to_search.append(y)
+
+    if not years_to_search:
+        if not json_output:
+            console.print("[red]No critics data found. Run 'lastfm critics fetch --year 2024' first.[/red]")
+        raise typer.Exit(1)
+
+    # === Aggregate candidates with multi-signal scoring ===
+    if not json_output:
+        console.print("[dim]Scoring candidates with multi-signal analysis...[/dim]")
+
+    candidates = []
+    seen_albums = set()  # Deduplicate across years/critics
+
+    for y in years_to_search:
+        try:
+            critics_data = crossref.load_critics_data(get_critics_path(y))
+
+            for lst in critics_data['raw']:
+                critic_name = lst['critic']
+                publication = lst.get('publication', '')
+
+                # Get critic alignment (0 if not in top aligned)
+                alignment = critic_similarities.get(critic_name, 0.0)
+
+                for album in lst['albums']:
+                    artist = album.get('artist', '')
+                    title = album.get('title', '')
+                    rank = album.get('rank', 50)
+
+                    if not artist or not title:
+                        continue
+
+                    key = (crossref.normalize_for_matching(artist),
+                           crossref.normalize_for_matching(title))
+
+                    # Skip if already heard or already seen
+                    if key in your_albums or key in seen_albums:
+                        continue
+                    seen_albums.add(key)
+
+                    artist_plays = your_artists.get(key[0], 0)
+
+                    # Compute multi-signal scores
+                    artist_similarity, similar_to = get_artist_similarity(artist)
+                    is_bridge, bridge_user_similar, bridge_critics_similar = is_bridge_artist(artist)
+
+                    # === Compute final weight based on mode ===
+                    if mode == "adventurous":
+                        # Prefer unknown artists, still weighted by critic alignment
+                        novelty = 1.0 if artist_plays == 0 else 0.3
+                        weight = alignment * novelty
+                    elif mode == "familiar":
+                        # Strongly prefer artists similar to your favorites
+                        # Artists with high similarity get big boost, unknowns get minimal weight
+                        if artist_similarity > 0.1:
+                            familiarity_boost = 2.0 + (8.0 * artist_similarity)  # 2-10x boost
+                        else:
+                            familiarity_boost = 0.1  # Low weight for unknown artists
+                        weight = alignment * familiarity_boost
+                    elif mode == "bridge":
+                        # Strongly prefer bridge artists (in both taste spaces)
+                        # Bridge artists get 10x weight, non-bridges get minimal weight
+                        bridge_boost = 10.0 if is_bridge else 0.1
+                        weight = alignment * bridge_boost
+
+                    # Ensure minimum weight for any aligned critic pick
+                    weight = max(weight, 0.01) if alignment > 0 else 0.001
+
+                    candidates.append({
+                        'artist': artist,
+                        'album': title,
+                        'year': y,
+                        'rank': rank,
+                        'critic': critic_name,
+                        'publication': publication,
+                        'alignment': alignment,
+                        'artist_plays': artist_plays,
+                        'artist_similarity': artist_similarity,
+                        'similar_to': similar_to,
+                        'is_bridge': is_bridge,
+                        'bridge_user_similar': bridge_user_similar,
+                        'bridge_critics_similar': bridge_critics_similar,
+                        'weight': weight,
+                    })
+        except (IOError, json.JSONDecodeError):
+            continue
+
+    if not candidates:
+        if not json_output:
+            console.print("[yellow]No unheard albums found![/yellow]")
+            console.print("Try running 'lastfm critics unheard' to see all recommendations.")
+        raise typer.Exit(0)
+
+    # === Weighted random selection ===
+    weights = [c['weight'] for c in candidates]
+    pick = random.choices(candidates, weights=weights, k=1)[0]
+
+    # Find critic rank among aligned critics
+    sorted_critics = sorted(critic_similarities.items(), key=lambda x: -x[1])
+    critic_rank = next((i + 1 for i, (name, _) in enumerate(sorted_critics)
+                       if name == pick['critic']), None)
+
+    # === Output ===
+    if json_output:
+        result = {
+            "mode": mode,
+            "artist": pick['artist'],
+            "album": pick['album'],
+            "year": pick['year'],
+            "rank": pick['rank'],
+            "critic": pick['critic'],
+            "publication": pick['publication'],
+            "critic_rank": critic_rank,
+            "critic_alignment": round(pick['alignment'], 3),
+            "artist_plays": pick['artist_plays'],
+            "known_artist": pick['artist_plays'] > 0,
+            "artist_similarity": round(pick['artist_similarity'], 3),
+            "similar_to_your_artists": pick['similar_to'],
+            "is_bridge_artist": pick['is_bridge'],
+            "bridge_user_similar": pick['bridge_user_similar'],
+            "bridge_critics_similar": pick['bridge_critics_similar'],
+            "candidates_count": len(candidates),
+            "weight": round(pick['weight'], 4),
+        }
+        print(json.dumps(result, indent=2))
+        return
+
+    # Display the pick
+    console.print()
+    console.print(f"[bold cyan]Today's Pick[/bold cyan] [dim]({mode} mode)[/dim]")
+    console.print("=" * 50)
+    console.print()
+    console.print(f"  [bold white]{pick['artist']}[/bold white] — [bold yellow]{pick['album']}[/bold yellow]")
+    console.print()
+
+    # === Why this pick (multi-signal explanation) ===
+    console.print("[bold]Why this pick:[/bold]")
+    console.print()
+
+    # Critic alignment
+    pub_str = f" ({pick['publication']})" if pick['publication'] else ""
+    if critic_rank:
+        console.print(f"  [cyan]Critic:[/cyan] {pick['critic']}{pub_str}")
+        console.print(f"          Your #{critic_rank} aligned critic ({pick['alignment']:.0%} match)")
+        console.print(f"          Listed at #{pick['rank']} in their {pick['year']} picks")
+    else:
+        console.print(f"  [cyan]Critic:[/cyan] {pick['critic']}{pub_str} ({pick['year']} pick)")
+
+    # Artist similarity
+    if pick['similar_to']:
+        similar_str = ", ".join(pick['similar_to'])
+        console.print()
+        console.print(f"  [magenta]Similar to:[/magenta] {similar_str}")
+        console.print(f"             ({pick['artist_similarity']:.0%} similarity in your listening)")
+
+    # Bridge status
+    if pick['is_bridge']:
+        console.print()
+        console.print(f"  [green]Bridge artist:[/green] Connects your taste to critical consensus")
+        if pick['bridge_user_similar']:
+            console.print(f"             You group with: {', '.join(pick['bridge_user_similar'])}")
+        if pick['bridge_critics_similar']:
+            console.print(f"             Critics group with: {', '.join(pick['bridge_critics_similar'])}")
+
+    # Familiarity context
+    console.print()
+    if pick['artist_plays'] > 0:
+        console.print(f"  [dim]You've played {pick['artist']} {pick['artist_plays']:,}x but never this album[/dim]")
+    else:
+        console.print(f"  [dim]New artist for you![/dim]")
+
+    console.print()
+    console.print("[bold green]Enjoy![/bold green]")
 
 
 @app.command()

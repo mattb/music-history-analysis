@@ -158,6 +158,7 @@ def critics_matched(
     limit: int = typer.Option(30, "--limit", "-n", help="Number of results"),
     familiarity: float = typer.Option(None, "--familiarity", "-f",
         help="Use continuous familiarity scoring (0-1) instead of 5x5 rule. Try 0.4-0.6."),
+    json_output: bool = typer.Option(False, "--json", help="Output as JSON"),
 ):
     """Show critic-loved albums you've listened to (across all years or filter by --year)."""
     # Get global options from context (local flag overrides global)
@@ -178,7 +179,7 @@ def critics_matched(
 
     # Build your albums set
     listened_albums = data.get_listened_albums(df, min_familiarity=fam)
-    if fam is not None:
+    if fam is not None and not json_output:
         console.print(f"[dim]Using familiarity threshold: {fam} ({len(listened_albums)} albums)[/dim]")
     your_albums_set = set()
     for artist, album in listened_albums:
@@ -225,6 +226,21 @@ def critics_matched(
             continue
 
     matched_list = sorted(all_matches.values(), key=lambda x: -x['critics_count'])
+
+    if json_output:
+        records = []
+        for i, m in enumerate(matched_list[:limit], 1):
+            records.append({
+                "rank": i,
+                "artist": m['artist'],
+                "album": m['album'],
+                "critics_count": m['critics_count'],
+                "your_plays": m['your_plays'],
+                "years": sorted(m['years']),
+            })
+        output = {"year": year, "total_matched": len(matched_list), "results": records}
+        print(json.dumps(output, indent=2))
+        return
 
     if year is not None:
         console.print(f"\n[bold cyan]Albums You've Heard That Critics Love ({year})[/bold cyan]")
@@ -275,6 +291,7 @@ def critics_unheard(
     show_similar: bool = typer.Option(False, "--show-similar", "-s", help="Show which of your artists are similar (uses critics embeddings)"),
     familiarity: float = typer.Option(None, "--familiarity", "-f",
         help="Use continuous familiarity scoring (0-1) instead of 5x5 rule. Lower = more 'unheard'."),
+    json_output: bool = typer.Option(False, "--json", help="Output as JSON"),
 ):
     """Show highly-rated albums you haven't listened to (across all years or filter by --year)."""
     # Get global options from context (local flag overrides global)
@@ -295,7 +312,7 @@ def critics_unheard(
 
     # Build set of your albums
     listened_albums = data.get_listened_albums(df, min_familiarity=fam)
-    if fam is not None:
+    if fam is not None and not json_output:
         console.print(f"[dim]Using familiarity threshold: {fam} ({len(listened_albums)} albums count as 'heard')[/dim]")
     your_albums = set()
     for artist, album in listened_albums:
@@ -383,7 +400,8 @@ def critics_unheard(
         # Weight by critic vector similarity - uses embeddings for more nuanced matching
         from .. import embeddings
 
-        console.print("[dim]Loading critic vector embeddings for scoring...[/dim]")
+        if not json_output:
+            console.print("[dim]Loading critic vector embeddings for scoring...[/dim]")
         try:
             critic_vectors = embeddings.get_or_build_critic_vectors()
             user_vector = critic_vectors.compute_user_vector(df, top_n_artists=100)
@@ -398,8 +416,9 @@ def critics_unheard(
 
             unheard_list = sorted(unheard_list, key=lambda x: (-x['weighted_score'], -x['critics_count']))
         except Exception as e:
-            console.print(f"[yellow]Could not load vector embeddings: {e}[/yellow]")
-            console.print("[yellow]Falling back to critics count sorting[/yellow]")
+            if not json_output:
+                console.print(f"[yellow]Could not load vector embeddings: {e}[/yellow]")
+                console.print("[yellow]Falling back to critics count sorting[/yellow]")
             unheard_list = sorted(unheard_list, key=lambda x: -x['critics_count'])
     else:
         unheard_list = sorted(unheard_list, key=lambda x: -x['critics_count'])
@@ -415,7 +434,8 @@ def critics_unheard(
     if show_similar:
         from .. import embeddings
 
-        console.print("[dim]Loading critics embeddings for similarity analysis...[/dim]")
+        if not json_output:
+            console.print("[dim]Loading critics embeddings for similarity analysis...[/dim]")
         try:
             critics_emb = embeddings.get_or_build_critics_embeddings()
 
@@ -458,8 +478,31 @@ def critics_unheard(
                         similar_from_yours.sort(key=lambda x: -x[1])
                         similarity_lookup[rec_artist_norm] = similar_from_yours[:2]
         except Exception as e:
-            console.print(f"[yellow]Could not load critics embeddings: {e}[/yellow]")
+            if not json_output:
+                console.print(f"[yellow]Could not load critics embeddings: {e}[/yellow]")
             show_similar = False
+
+    # JSON output
+    if json_output:
+        records = []
+        for i, u in enumerate(unheard_list, 1):
+            record = {
+                "rank": i,
+                "artist": u['artist'],
+                "album": u['album'],
+                "critics_count": u['critics_count'],
+                "years": sorted(u['years']),
+                "artist_plays": u.get('artist_plays', 0),
+                "heard_artist": u.get('heard_artist', False),
+            }
+            if weighted or vector_weighted:
+                record["weighted_score"] = round(u.get('weighted_score', 0), 3)
+            if u.get('critics'):
+                record["critics"] = u['critics']
+            records.append(record)
+        output = {"year": year, "total_unheard": len(all_unheard), "results": records}
+        print(json.dumps(output, indent=2))
+        return
 
     # Display results
     if year is not None:
@@ -710,6 +753,350 @@ def critics_list(
             )
 
     console.print(table)
+
+
+@app.command(name="review")
+def critics_review(
+    ctx: typer.Context,
+    limit: int = typer.Option(20, "--limit", "-n", help="Number of top albums/artists to show"),
+    json_output: bool = typer.Option(False, "--json", help="Output as JSON"),
+):
+    """Review a year in critics' picks - consensus albums, patterns, and your matches.
+
+    Shows what critics collectively said about the year:
+    - Consensus picks (albums on many lists)
+    - Top artists by total appearances
+    - Distribution patterns
+    - Where you align with or diverge from consensus
+    """
+    # Get global options from context
+    csv = ctx.obj.get("csv") if ctx.obj else None
+    year = ctx.obj.get("year") if ctx.obj else None
+    year = year if year is not None else 2024
+    fam = ctx.obj.get("familiarity") if ctx.obj else None
+
+    json_path = get_critics_path(year)
+    if not json_path.exists():
+        console.print(f"[red]No critics data for {year}. Run 'lastfm critics fetch --year {year}' first.[/red]")
+        raise typer.Exit(1)
+
+    with open(json_path) as f:
+        raw_data = json.load(f)
+
+    # Load user's listening data
+    df = None
+    your_albums = set()
+    your_artists = {}
+    try:
+        df = data.load_scrobbles(get_csv_path(csv))
+        listened_albums = data.get_listened_albums(df, min_familiarity=fam)
+        for artist, album in listened_albums:
+            key = (crossref.normalize_for_matching(artist),
+                   crossref.normalize_for_matching(album))
+            your_albums.add(key)
+        # Track artist plays
+        for _, row in df.iterrows():
+            artist = row.get("artist", "")
+            if pd.notna(artist) and artist:
+                artist_norm = crossref.normalize_for_matching(artist)
+                your_artists[artist_norm] = your_artists.get(artist_norm, 0) + 1
+    except Exception:
+        pass  # Can run without user data
+
+    # === Aggregate critics data ===
+
+    # Count albums across all critics
+    album_counts = defaultdict(lambda: {
+        "artist": None,
+        "album": None,
+        "critics": [],
+        "ranks": [],
+    })
+
+    # Count artists
+    artist_counts = defaultdict(lambda: {
+        "name": None,
+        "albums": set(),
+        "critics": set(),
+        "total_appearances": 0,
+    })
+
+    # Critic stats
+    critic_list_sizes = []
+
+    for lst in raw_data:
+        critic = lst["critic"]
+        albums = lst["albums"]
+        critic_list_sizes.append(len(albums))
+
+        for album in albums:
+            artist = album.get("artist", "")
+            title = album.get("title", "")
+            rank = album.get("rank", 50)
+
+            if not artist or not title:
+                continue
+
+            key = (crossref.normalize_for_matching(artist),
+                   crossref.normalize_for_matching(title))
+
+            album_counts[key]["artist"] = artist
+            album_counts[key]["album"] = title
+            album_counts[key]["critics"].append(critic)
+            album_counts[key]["ranks"].append(rank)
+
+            artist_norm = crossref.normalize_for_matching(artist)
+            artist_counts[artist_norm]["name"] = artist
+            artist_counts[artist_norm]["albums"].add(title)
+            artist_counts[artist_norm]["critics"].add(critic)
+            artist_counts[artist_norm]["total_appearances"] += 1
+
+    # === Compute statistics ===
+
+    total_critics = len(raw_data)
+    total_entries = sum(critic_list_sizes)
+    unique_albums = len(album_counts)
+    unique_artists = len(artist_counts)
+    avg_list_size = total_entries / total_critics if total_critics > 0 else 0
+    median_list_size = sorted(critic_list_sizes)[len(critic_list_sizes) // 2] if critic_list_sizes else 0
+
+    # Top albums by critic count
+    top_albums = sorted(
+        album_counts.values(),
+        key=lambda x: (-len(x["critics"]), sum(x["ranks"]) / len(x["ranks"]))
+    )[:limit]
+
+    # Add user match info
+    for album in top_albums:
+        key = (crossref.normalize_for_matching(album["artist"]),
+               crossref.normalize_for_matching(album["album"]))
+        album["you_heard"] = key in your_albums
+        album["avg_rank"] = sum(album["ranks"]) / len(album["ranks"])
+
+    # Critical darlings - highest ranked (lowest avg rank) with minimum appearances
+    # These are albums that when critics list them, they rank them highly
+    MIN_CRITICS_FOR_DARLING = 5
+    critical_darlings = sorted(
+        [a for a in album_counts.values() if len(a["critics"]) >= MIN_CRITICS_FOR_DARLING],
+        key=lambda x: sum(x["ranks"]) / len(x["ranks"])  # Lower avg rank = better
+    )[:15]
+
+    for darling in critical_darlings:
+        key = (crossref.normalize_for_matching(darling["artist"]),
+               crossref.normalize_for_matching(darling["album"]))
+        darling["you_heard"] = key in your_albums
+        darling["avg_rank"] = sum(darling["ranks"]) / len(darling["ranks"])
+
+    # Top artists by appearances
+    top_artists_list = sorted(
+        artist_counts.values(),
+        key=lambda x: (-x["total_appearances"], -len(x["critics"]))
+    )[:limit]
+
+    for artist_data in top_artists_list:
+        artist_norm = crossref.normalize_for_matching(artist_data["name"])
+        artist_data["your_plays"] = your_artists.get(artist_norm, 0)
+
+    # === User alignment stats ===
+    consensus_albums = [a for a in top_albums if len(a["critics"]) >= 10]
+    consensus_heard = sum(1 for a in consensus_albums if a["you_heard"])
+    consensus_total = len(consensus_albums)
+
+    # Find biggest misses (high consensus, not heard)
+    biggest_misses = [a for a in top_albums if not a["you_heard"]][:5]
+
+    # Find your deep cuts (you heard but few critics listed)
+    your_deep_cuts = []
+    if your_albums:
+        for key in your_albums:
+            if key in album_counts:
+                album_info = album_counts[key]
+                critic_count = len(album_info["critics"])
+                if 1 <= critic_count <= 3:  # Only 1-3 critics listed it
+                    your_deep_cuts.append({
+                        "artist": album_info["artist"],
+                        "album": album_info["album"],
+                        "critics": critic_count,
+                    })
+        your_deep_cuts = sorted(your_deep_cuts, key=lambda x: x["critics"])[:5]
+
+    # === Output ===
+
+    if json_output:
+        result = {
+            "year": year,
+            "summary": {
+                "total_critics": total_critics,
+                "total_entries": total_entries,
+                "unique_albums": unique_albums,
+                "unique_artists": unique_artists,
+                "avg_list_size": round(avg_list_size, 1),
+                "median_list_size": median_list_size,
+            },
+            "consensus_albums": [
+                {
+                    "artist": a["artist"],
+                    "album": a["album"],
+                    "critics_count": len(a["critics"]),
+                    "avg_rank": round(a["avg_rank"], 1),
+                    "you_heard": a["you_heard"],
+                }
+                for a in top_albums
+            ],
+            "critical_darlings": [
+                {
+                    "artist": a["artist"],
+                    "album": a["album"],
+                    "critics_count": len(a["critics"]),
+                    "avg_rank": round(a["avg_rank"], 1),
+                    "you_heard": a["you_heard"],
+                }
+                for a in critical_darlings
+            ],
+            "top_artists": [
+                {
+                    "artist": a["name"],
+                    "appearances": a["total_appearances"],
+                    "albums": len(a["albums"]),
+                    "critics": len(a["critics"]),
+                    "your_plays": a["your_plays"],
+                }
+                for a in top_artists_list
+            ],
+            "your_alignment": {
+                "consensus_heard": consensus_heard,
+                "consensus_total": consensus_total,
+                "consensus_percentage": round(100 * consensus_heard / consensus_total, 1) if consensus_total > 0 else 0,
+            },
+            "biggest_misses": [
+                {"artist": a["artist"], "album": a["album"], "critics": len(a["critics"])}
+                for a in biggest_misses
+            ],
+            "your_deep_cuts": your_deep_cuts,
+        }
+        print(json.dumps(result, indent=2))
+        return
+
+    # === Console output ===
+
+    console.print(f"\n[bold magenta]═══ {year} CRITICS REVIEW ═══[/bold magenta]")
+    console.print(f"[dim]What {total_critics} critics collectively said about {year}[/dim]\n")
+
+    # Summary stats
+    console.print("[bold]The Numbers[/bold]")
+    console.print(f"  Critics: {total_critics}")
+    console.print(f"  Total album picks: {total_entries:,}")
+    console.print(f"  Unique albums: {unique_albums:,}")
+    console.print(f"  Unique artists: {unique_artists:,}")
+    console.print(f"  Avg list size: {avg_list_size:.0f} albums (median: {median_list_size})")
+
+    # Consensus albums
+    console.print(f"\n[bold cyan]Consensus Albums[/bold cyan]")
+    console.print(f"[dim]The albums that appeared on the most lists[/dim]\n")
+
+    table = Table(show_header=True)
+    table.add_column("#", justify="right", style="dim", width=3)
+    table.add_column("Artist", style="cyan")
+    table.add_column("Album", style="yellow")
+    table.add_column("Critics", justify="right", style="green")
+    table.add_column("Avg Rank", justify="right", style="dim")
+    table.add_column("You", justify="center")
+
+    for i, album in enumerate(top_albums[:15], 1):
+        you_str = "[green]✓[/green]" if album["you_heard"] else "[dim]—[/dim]"
+        table.add_row(
+            str(i),
+            album["artist"][:25],
+            album["album"][:30] + "..." if len(album["album"]) > 30 else album["album"],
+            str(len(album["critics"])),
+            f"#{album['avg_rank']:.0f}",
+            you_str,
+        )
+
+    console.print(table)
+
+    # Critical darlings - ranked highest when they appear
+    console.print(f"\n[bold cyan]Critical Darlings[/bold cyan]")
+    console.print(f"[dim]Albums ranked highest when they appear (min {MIN_CRITICS_FOR_DARLING} critics)[/dim]\n")
+
+    darlings_table = Table(show_header=True)
+    darlings_table.add_column("#", justify="right", style="dim", width=3)
+    darlings_table.add_column("Artist", style="cyan")
+    darlings_table.add_column("Album", style="yellow")
+    darlings_table.add_column("Avg Rank", justify="right", style="green")
+    darlings_table.add_column("Critics", justify="right", style="dim")
+    darlings_table.add_column("You", justify="center")
+
+    for i, darling in enumerate(critical_darlings[:10], 1):
+        you_str = "[green]✓[/green]" if darling["you_heard"] else "[dim]—[/dim]"
+        darlings_table.add_row(
+            str(i),
+            darling["artist"][:25],
+            darling["album"][:30] + "..." if len(darling["album"]) > 30 else darling["album"],
+            f"#{darling['avg_rank']:.1f}",
+            str(len(darling["critics"])),
+            you_str,
+        )
+
+    console.print(darlings_table)
+
+    # Top artists
+    console.print(f"\n[bold cyan]Dominant Artists[/bold cyan]")
+    console.print(f"[dim]Artists with the most total appearances across all lists[/dim]\n")
+
+    table2 = Table(show_header=True)
+    table2.add_column("#", justify="right", style="dim", width=3)
+    table2.add_column("Artist", style="cyan")
+    table2.add_column("Appearances", justify="right", style="green")
+    table2.add_column("Albums", justify="right")
+    table2.add_column("Your Plays", justify="right", style="magenta")
+
+    for i, artist_data in enumerate(top_artists_list[:10], 1):
+        plays_str = f"{artist_data['your_plays']:,}" if artist_data['your_plays'] > 0 else "[dim]—[/dim]"
+        table2.add_row(
+            str(i),
+            artist_data["name"][:30],
+            str(artist_data["total_appearances"]),
+            str(len(artist_data["albums"])),
+            plays_str,
+        )
+
+    console.print(table2)
+
+    # User alignment section
+    if your_albums:
+        console.print(f"\n[bold cyan]Your Alignment[/bold cyan]")
+
+        if consensus_total > 0:
+            pct = 100 * consensus_heard / consensus_total
+            console.print(f"  Consensus picks heard: {consensus_heard}/{consensus_total} ({pct:.0f}%)")
+
+        if biggest_misses:
+            console.print(f"\n  [bold]Biggest misses[/bold] (consensus picks you haven't heard):")
+            for miss in biggest_misses:
+                console.print(f"    • {miss['artist']} — {miss['album']} ({len(miss['critics'])} critics)")
+
+        if your_deep_cuts:
+            console.print(f"\n  [bold]Your deep cuts[/bold] (you heard, few critics listed):")
+            for cut in your_deep_cuts:
+                console.print(f"    • {cut['artist']} — {cut['album']} (only {cut['critics']} critic{'s' if cut['critics'] > 1 else ''})")
+
+    # Distribution insights
+    console.print(f"\n[bold cyan]Distribution[/bold cyan]")
+
+    # How concentrated is consensus?
+    albums_on_10_plus = sum(1 for a in album_counts.values() if len(a["critics"]) >= 10)
+    albums_on_5_plus = sum(1 for a in album_counts.values() if len(a["critics"]) >= 5)
+    albums_on_1_only = sum(1 for a in album_counts.values() if len(a["critics"]) == 1)
+
+    console.print(f"  Albums on 10+ lists: {albums_on_10_plus}")
+    console.print(f"  Albums on 5+ lists: {albums_on_5_plus}")
+    console.print(f"  Albums on only 1 list: {albums_on_1_only} ({100*albums_on_1_only/unique_albums:.0f}% of unique albums)")
+
+    if top_albums:
+        top_album = top_albums[0]
+        console.print(f"\n  [bold]Most consensus:[/bold] {top_album['artist']} — {top_album['album']}")
+        console.print(f"    {len(top_album['critics'])} critics ({100*len(top_album['critics'])/total_critics:.0f}% of all lists)")
 
 
 @app.command(name="who-listed")
