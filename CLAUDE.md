@@ -87,7 +87,21 @@ lastfm fetch YOUR_USERNAME --start-year 2024
 - **Filters applied**: 30+ second plays only, skipped tracks excluded by default
 - **Usage**: After conversion, use `--csv spotify-scrobbles.csv` with any command
 
-**Note**: Spotify data lacks MusicBrainz IDs, so metadata enrichment relies on artist/album name matching.
+**Compatibility Note**: Spotify data works with all features. Since Spotify exports lack MusicBrainz IDs, the system uses name-based matching instead:
+
+| Feature Category | Compatibility | Notes |
+|------------------|---------------|-------|
+| `listen` commands | Full | All work perfectly |
+| `critics` commands | Full | Name-based normalization |
+| `history` commands | Full | No metadata needed |
+| `visualize` commands | Full | Embeddings use co-occurrence |
+| `eval` commands | Full | No MBID dependency |
+| `metadata` commands | Works with fallbacks | First run may be slower (API calls) |
+
+**Tips for Spotify users:**
+- Run `lastfm metadata download` first for best performance
+- Genre/label/country coverage depends on MusicBrainz having the release
+- All core analysis features work identically to Last.fm data
 
 ## Key Modules
 
