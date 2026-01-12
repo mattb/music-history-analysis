@@ -221,4 +221,4 @@ Social comparison could be interesting too—comparing embedding spaces between 
 
 For now though, it's quite satisfying to finally have a tool that surfaces the Autechre album I've somehow never heard despite 190 plays of other Autechre. Twenty years of data, finally doing something useful.
 
-Code is on [GitHub](https://github.com/mattb/music-2025).
+Code is on [GitHub](https://github.com/mattb/music-history-analysis).
