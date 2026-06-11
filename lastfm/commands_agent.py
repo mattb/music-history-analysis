@@ -17,8 +17,8 @@ from .session_client import (
     list_sessions,
     read_metadata,
     remove_session_files,
+    session_is_live,
     session_paths,
-    socket_is_connectable,
     start_session,
     stop_session,
 )
@@ -152,7 +152,7 @@ def register(app: typer.Typer) -> None:
             if not paths.root.exists():
                 errors.append({"session_id": session_id, "code": "SESSION_NOT_FOUND"})
                 return
-            if socket_is_connectable(paths.socket):
+            if session_is_live(session_id):
                 skipped.append({"session_id": session_id, "reason": "live_session"})
                 return
             remove_session_files(session_id)

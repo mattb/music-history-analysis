@@ -2,6 +2,7 @@ import json
 from pathlib import Path
 
 import lastfm.session_client as session_client
+from lastfm.cli import app
 from lastfm.session_client import (
     SessionPaths,
     list_sessions,
@@ -11,6 +12,10 @@ from lastfm.session_client import (
     start_session,
     stop_session,
 )
+from typer.testing import CliRunner
+
+
+runner = CliRunner()
 
 
 def test_session_paths_are_isolated_by_id(tmp_path, monkeypatch):
@@ -131,10 +136,62 @@ def test_list_sessions_reads_metadata(tmp_path, monkeypatch):
     assert list_sessions() == [{"session_id": "a", "pid": 123}]
 
 
+def test_list_sessions_reports_corrupt_metadata(tmp_path, monkeypatch):
+    monkeypatch.setenv("LASTFM_SESSION_ROOT", str(tmp_path))
+    paths = session_paths("bad")
+    paths.root.mkdir(parents=True)
+    paths.metadata.write_text("{")
+
+    sessions = list_sessions()
+
+    assert sessions[0]["session_id"] == "bad"
+    assert "metadata_error" in sessions[0]
+
+
 def test_remove_session_files_removes_directory(tmp_path, monkeypatch):
     monkeypatch.setenv("LASTFM_SESSION_ROOT", str(tmp_path))
     paths = session_paths("a")
     paths.root.mkdir(parents=True)
     paths.metadata.write_text("{}")
     remove_session_files("a")
+    assert not paths.root.exists()
+
+
+def test_session_cleanup_skips_pid_verified_live_session(tmp_path, monkeypatch):
+    monkeypatch.setenv("LASTFM_SESSION_ROOT", str(tmp_path))
+    paths = session_paths("live")
+    paths.root.mkdir(parents=True)
+    paths.metadata.write_text(json.dumps({"session_id": "live", "pid": 12345}))
+    paths.pid.write_text("12345")
+    monkeypatch.setattr(session_client, "socket_is_connectable", lambda _path: False)
+    monkeypatch.setattr(
+        session_client,
+        "session_process_command",
+        lambda _pid: "/path/python -m lastfm.session_daemon --session-id live --csv recenttracks.csv",
+    )
+
+    result = runner.invoke(app, ["session-cleanup", "--session", "live", "--json"])
+
+    assert result.exit_code == 0
+    payload = json.loads(result.output)
+    assert payload["result"]["cleaned"] == []
+    assert payload["result"]["skipped"] == [{"reason": "live_session", "session_id": "live"}]
+    assert paths.root.exists()
+
+
+def test_session_cleanup_all_removes_stale_corrupt_metadata(tmp_path, monkeypatch):
+    monkeypatch.setenv("LASTFM_SESSION_ROOT", str(tmp_path))
+    paths = session_paths("bad")
+    paths.root.mkdir(parents=True)
+    paths.metadata.write_text("{")
+    monkeypatch.setattr(session_client, "socket_is_connectable", lambda _path: False)
+    monkeypatch.setattr(session_client, "session_process_command", lambda _pid: None)
+
+    result = runner.invoke(app, ["session-cleanup", "--json"])
+
+    assert result.exit_code == 0
+    payload = json.loads(result.output)
+    assert payload["result"]["cleaned"] == ["bad"]
+    assert payload["result"]["skipped"] == []
+    assert payload["result"]["errors"] == []
     assert not paths.root.exists()

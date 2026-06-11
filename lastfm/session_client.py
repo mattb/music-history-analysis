@@ -82,6 +82,22 @@ def verify_session_process(pid: int, session_id: str) -> bool:
     return session_process_matches(session_process_command(pid), session_id)
 
 
+def session_process_is_verified(session_id: str) -> bool:
+    paths = session_paths(session_id)
+    if not paths.pid.exists():
+        return False
+    try:
+        pid = int(paths.pid.read_text())
+    except ValueError:
+        return False
+    return verify_session_process(pid, session_id)
+
+
+def session_is_live(session_id: str) -> bool:
+    paths = session_paths(session_id)
+    return socket_is_connectable(paths.socket) or session_process_is_verified(session_id)
+
+
 def start_session(session_id: str, csv_path: Path, json_output: bool = True) -> subprocess.Popen:
     paths = session_paths(session_id)
     paths.root.mkdir(parents=True, exist_ok=True)
@@ -172,7 +188,11 @@ def list_sessions() -> list[dict[str, Any]]:
 
     sessions = []
     for metadata_path in sorted(root.glob("*/metadata.json")):
-        sessions.append(json.loads(metadata_path.read_text()))
+        session_id = metadata_path.parent.name
+        try:
+            sessions.append(json.loads(metadata_path.read_text()))
+        except (OSError, json.JSONDecodeError) as exc:
+            sessions.append({"session_id": session_id, "metadata_error": str(exc)})
     return sessions
 
 
