@@ -24,6 +24,11 @@ dependencies = [
     "fastmcp>=2.14.2",
 ]
 
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.0.0",
+]
+
 [project.scripts]
 lastfm = "lastfm.cli:app"
 
