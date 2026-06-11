@@ -36,3 +36,34 @@ def test_root_help_mentions_agent_workflow():
     assert "Agent workflow" in result.output
     assert "session-start" in result.output
     assert "listening-stats" in result.output
+
+
+def test_all_agent_commands_are_registered_in_help():
+    expected = [
+        "taste-evolution",
+        "musical-bridges",
+        "blind-spots",
+        "artist-deep-dive",
+        "similar-artists",
+        "critic-alignment",
+        "temporal-patterns",
+        "period-summary",
+        "year-review",
+        "listening-by-release-era",
+        "common-transitions",
+        "discovery-context",
+        "critics-world",
+        "album-acclaim",
+        "validated-albums",
+        "critic-profile",
+        "search-critics-artist",
+        "obsession-tracks",
+        "one-track-artists",
+        "ep-single-artists",
+        "overview-summary",
+        "discovered-artists",
+        "critics-lists",
+    ]
+    output = runner.invoke(app, ["--help"]).output
+    for command in expected:
+        assert command in output
