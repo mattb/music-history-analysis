@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 from contextlib import redirect_stdout
 from io import StringIO
 from pathlib import Path
@@ -11,13 +12,14 @@ import typer
 
 from . import agent_tools, analysis_state
 from .agent_output import error_envelope, print_json, success_envelope
+from .session_client import dispatch_to_session, read_metadata, session_paths, start_session
 
 
-def _resolve_target(session: str | None, csv: Path | None) -> tuple[str | None, analysis_state.AnalysisState]:
+def _resolve_target(session: str | None, csv: Path | None) -> tuple[str | None, analysis_state.AnalysisState | None]:
     if bool(session) == bool(csv):
         raise typer.BadParameter("Provide exactly one of --session or --csv")
     if session:
-        raise RuntimeError("session dispatch is added in the daemon task")
+        return session, None
 
     state = analysis_state.AnalysisState()
     state.load(csv)
@@ -28,7 +30,10 @@ def _run_agent_command(command: str, session: str | None, csv: Path | None, para
     try:
         with redirect_stdout(StringIO()):
             session_id, state = _resolve_target(session, csv)
-            result = agent_tools.dispatch(state, command, params)
+            if session_id:
+                result = dispatch_to_session(session_id, command, params)
+            else:
+                result = agent_tools.dispatch(state, command, params)
         print_json(success_envelope(command=command, result=result, session_id=session_id))
     except typer.BadParameter:
         raise
@@ -44,6 +49,80 @@ def _run_agent_command(command: str, session: str | None, csv: Path | None, para
 
 
 def register(app: typer.Typer) -> None:
+    @app.command("session-start", help="Start a named Last.fm analysis daemon session.")
+    def session_start(
+        session_id: str = typer.Option(..., "--session-id", help="Unique session ID."),
+        csv: Path = typer.Option(..., "--csv", help="Scrobbles CSV for this session."),
+        json_output: bool = typer.Option(True, "--json", help="Emit NDJSON startup events."),
+    ):
+        try:
+            process = start_session(session_id=session_id, csv_path=csv, json_output=json_output)
+            if not json_output:
+                typer.echo(f"Started session {session_id} with pid {process.pid}")
+        except Exception as exc:
+            if json_output:
+                print_json(error_envelope(
+                    command="session-start",
+                    code=type(exc).__name__.upper(),
+                    message=str(exc),
+                    retryable=False,
+                    session_id=session_id,
+                ))
+            else:
+                typer.echo(f"Error: {exc}", err=True)
+            raise typer.Exit(1)
+
+    @app.command("session-status", help="Read metadata for a named daemon session.")
+    def session_status(
+        session: str = typer.Option(..., "--session", help="Session ID."),
+        json_output: bool = typer.Option(True, "--json", help="Emit structured JSON."),
+    ):
+        try:
+            payload = success_envelope("session-status", read_metadata(session), session_id=session)
+            if json_output:
+                print_json(payload)
+            else:
+                typer.echo(payload["result"])
+        except Exception as exc:
+            if json_output:
+                print_json(error_envelope(
+                    command="session-status",
+                    code=type(exc).__name__.upper(),
+                    message=str(exc),
+                    retryable=False,
+                    session_id=session,
+                ))
+            else:
+                typer.echo(f"Error: {exc}", err=True)
+            raise typer.Exit(1)
+
+    @app.command("session-stop", help="Stop a named daemon session.")
+    def session_stop(
+        session: str = typer.Option(..., "--session", help="Session ID."),
+        json_output: bool = typer.Option(True, "--json", help="Emit structured JSON."),
+    ):
+        try:
+            paths = session_paths(session)
+            pid = int(paths.pid.read_text())
+            os.kill(pid, 15)
+            payload = success_envelope("session-stop", {"stopped": True, "pid": pid}, session_id=session)
+            if json_output:
+                print_json(payload)
+            else:
+                typer.echo(f"Stopped session {session} with pid {pid}")
+        except Exception as exc:
+            if json_output:
+                print_json(error_envelope(
+                    command="session-stop",
+                    code=type(exc).__name__.upper(),
+                    message=str(exc),
+                    retryable=False,
+                    session_id=session,
+                ))
+            else:
+                typer.echo(f"Error: {exc}", err=True)
+            raise typer.Exit(1)
+
     @app.command("taste-evolution", help="Agent command: analyze taste evolution as JSON.")
     def taste_evolution(
         session: str | None = typer.Option(None, "--session", help="Named daemon session ID."),
