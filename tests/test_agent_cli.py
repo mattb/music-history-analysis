@@ -67,3 +67,18 @@ def test_all_agent_commands_are_registered_in_help():
     output = runner.invoke(app, ["--help"]).output
     for command in expected:
         assert command in output
+
+
+def test_listening_stats_help_documents_output_contract():
+    result = runner.invoke(app, ["listening-stats", "--help"])
+    assert result.exit_code == 0
+    assert "Output contract" in result.output
+    assert "--session" in result.output
+    assert "--csv" in result.output
+
+
+def test_session_start_help_documents_lifecycle():
+    result = runner.invoke(app, ["session-start", "--help"])
+    assert result.exit_code == 0
+    assert "NDJSON lifecycle events" in result.output
+    assert "ready" in result.output

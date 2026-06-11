@@ -24,6 +24,24 @@ from .session_client import (
 )
 
 
+AGENT_ANALYSIS_HELP_SUFFIX = (
+    "Prerequisites: use either --session for a running daemon or --csv for one-shot mode.\n\n"
+    "Output contract: --json writes a single JSON envelope to stdout; diagnostics go to stderr.\n\n"
+    "Failure behavior: non-zero exit with ok=false JSON envelope for runtime failures."
+)
+
+SESSION_START_HELP = (
+    "Start a named daemon session.\n\n"
+    "Workflow: loads CSV, builds cached embeddings, writes metadata, then listens on a Unix socket.\n\n"
+    "Output contract: --json writes NDJSON lifecycle events including start, load_csv, and ready.\n\n"
+    "Failure behavior: startup failures exit non-zero before the ready event."
+)
+
+
+def _agent_help(first_sentence: str) -> str:
+    return f"{first_sentence}\n\n{AGENT_ANALYSIS_HELP_SUFFIX}"
+
+
 def _resolve_target(session: str | None, csv: Path | None) -> tuple[str | None, analysis_state.AnalysisState | None]:
     if bool(session) == bool(csv):
         raise typer.BadParameter("Provide exactly one of --session or --csv")
@@ -58,7 +76,7 @@ def _run_agent_command(command: str, session: str | None, csv: Path | None, para
 
 
 def register(app: typer.Typer) -> None:
-    @app.command("session-start", help="Start a named Last.fm analysis daemon session.")
+    @app.command("session-start", help=SESSION_START_HELP)
     def session_start(
         session_id: str = typer.Option(..., "--session-id", help="Unique session ID."),
         csv: Path = typer.Option(..., "--csv", help="Scrobbles CSV for this session."),
@@ -175,7 +193,7 @@ def register(app: typer.Typer) -> None:
         else:
             typer.echo(result)
 
-    @app.command("taste-evolution", help="Agent command: analyze taste evolution as JSON.")
+    @app.command("taste-evolution", help=_agent_help("Analyze taste evolution."))
     def taste_evolution(
         session: str | None = typer.Option(None, "--session", help="Named daemon session ID."),
         csv: Path | None = typer.Option(None, "--csv", help="Run one-shot against this scrobbles CSV."),
@@ -185,7 +203,7 @@ def register(app: typer.Typer) -> None:
     ):
         _run_agent_command("taste-evolution", session, csv, {"start_year": start_year, "end_year": end_year})
 
-    @app.command("musical-bridges", help="Agent command: find musical bridges as JSON.")
+    @app.command("musical-bridges", help=_agent_help("Find musical bridges."))
     def musical_bridges(
         session: str | None = typer.Option(None, "--session", help="Named daemon session ID."),
         csv: Path | None = typer.Option(None, "--csv", help="Run one-shot against this scrobbles CSV."),
@@ -195,7 +213,7 @@ def register(app: typer.Typer) -> None:
     ):
         _run_agent_command("musical-bridges", session, csv, {"artist": artist, "top_n": top_n})
 
-    @app.command("blind-spots", help="Agent command: find critically acclaimed blind spots as JSON.")
+    @app.command("blind-spots", help=_agent_help("Find critically acclaimed blind spots."))
     def blind_spots(
         session: str | None = typer.Option(None, "--session", help="Named daemon session ID."),
         csv: Path | None = typer.Option(None, "--csv", help="Run one-shot against this scrobbles CSV."),
@@ -206,7 +224,7 @@ def register(app: typer.Typer) -> None:
     ):
         _run_agent_command("blind-spots", session, csv, {"year": year, "min_critics": min_critics, "limit": limit})
 
-    @app.command("artist-deep-dive", help="Agent command: analyze one or more artists as JSON.")
+    @app.command("artist-deep-dive", help=_agent_help("Analyze one or more artists."))
     def artist_deep_dive(
         session: str | None = typer.Option(None, "--session", help="Named daemon session ID."),
         csv: Path | None = typer.Option(None, "--csv", help="Run one-shot against this scrobbles CSV."),
@@ -215,7 +233,7 @@ def register(app: typer.Typer) -> None:
     ):
         _run_agent_command("artist-deep-dive", session, csv, {"artists": artists})
 
-    @app.command("similar-artists", help="Agent command: find similar artists as JSON.")
+    @app.command("similar-artists", help=_agent_help("Find similar artists."))
     def similar_artists(
         session: str | None = typer.Option(None, "--session", help="Named daemon session ID."),
         csv: Path | None = typer.Option(None, "--csv", help="Run one-shot against this scrobbles CSV."),
@@ -226,7 +244,7 @@ def register(app: typer.Typer) -> None:
     ):
         _run_agent_command("similar-artists", session, csv, {"artist": artist, "source": source, "top_n": top_n})
 
-    @app.command("listening-stats", help="Agent command: return listening statistics as JSON.")
+    @app.command("listening-stats", help=_agent_help("Return listening statistics."))
     def listening_stats(
         session: str | None = typer.Option(None, "--session", help="Named daemon session ID."),
         csv: Path | None = typer.Option(None, "--csv", help="Run one-shot against this scrobbles CSV."),
@@ -235,7 +253,7 @@ def register(app: typer.Typer) -> None:
     ):
         _run_agent_command("listening-stats", session, csv, {"year": year})
 
-    @app.command("top-artists", help="Agent command: return top artists as JSON.")
+    @app.command("top-artists", help=_agent_help("Return top artists."))
     def top_artists(
         session: str | None = typer.Option(None, "--session", help="Named daemon session ID."),
         csv: Path | None = typer.Option(None, "--csv", help="Run one-shot against this scrobbles CSV."),
@@ -245,7 +263,7 @@ def register(app: typer.Typer) -> None:
     ):
         _run_agent_command("top-artists", session, csv, {"year": year, "limit": limit})
 
-    @app.command("critic-alignment", help="Agent command: find aligned critics as JSON.")
+    @app.command("critic-alignment", help=_agent_help("Find aligned critics."))
     def critic_alignment(
         session: str | None = typer.Option(None, "--session", help="Named daemon session ID."),
         csv: Path | None = typer.Option(None, "--csv", help="Run one-shot against this scrobbles CSV."),
@@ -254,7 +272,7 @@ def register(app: typer.Typer) -> None:
     ):
         _run_agent_command("critic-alignment", session, csv, {"limit": limit})
 
-    @app.command("temporal-patterns", help="Agent command: analyze temporal listening patterns as JSON.")
+    @app.command("temporal-patterns", help=_agent_help("Analyze temporal listening patterns."))
     def temporal_patterns(
         session: str | None = typer.Option(None, "--session", help="Named daemon session ID."),
         csv: Path | None = typer.Option(None, "--csv", help="Run one-shot against this scrobbles CSV."),
@@ -263,7 +281,7 @@ def register(app: typer.Typer) -> None:
     ):
         _run_agent_command("temporal-patterns", session, csv, {"year": year})
 
-    @app.command("period-summary", help="Agent command: summarize a listening period as JSON.")
+    @app.command("period-summary", help=_agent_help("Summarize a listening period."))
     def period_summary(
         session: str | None = typer.Option(None, "--session", help="Named daemon session ID."),
         csv: Path | None = typer.Option(None, "--csv", help="Run one-shot against this scrobbles CSV."),
@@ -273,7 +291,7 @@ def register(app: typer.Typer) -> None:
     ):
         _run_agent_command("period-summary", session, csv, {"start_year": start_year, "end_year": end_year})
 
-    @app.command("year-review", help="Agent command: generate year review data as JSON.")
+    @app.command("year-review", help=_agent_help("Generate year review data."))
     def year_review(
         session: str | None = typer.Option(None, "--session", help="Named daemon session ID."),
         csv: Path | None = typer.Option(None, "--csv", help="Run one-shot against this scrobbles CSV."),
@@ -282,7 +300,7 @@ def register(app: typer.Typer) -> None:
     ):
         _run_agent_command("year-review", session, csv, {"years": years})
 
-    @app.command("listening-by-release-era", help="Agent command: analyze listening by release era as JSON.")
+    @app.command("listening-by-release-era", help=_agent_help("Analyze listening by release era."))
     def listening_by_release_era(
         session: str | None = typer.Option(None, "--session", help="Named daemon session ID."),
         csv: Path | None = typer.Option(None, "--csv", help="Run one-shot against this scrobbles CSV."),
@@ -298,7 +316,7 @@ def register(app: typer.Typer) -> None:
             {"release_start": release_start, "release_end": release_end, "limit": limit},
         )
 
-    @app.command("common-transitions", help="Agent command: find common artist transitions as JSON.")
+    @app.command("common-transitions", help=_agent_help("Find common artist transitions."))
     def common_transitions(
         session: str | None = typer.Option(None, "--session", help="Named daemon session ID."),
         csv: Path | None = typer.Option(None, "--csv", help="Run one-shot against this scrobbles CSV."),
@@ -308,7 +326,7 @@ def register(app: typer.Typer) -> None:
     ):
         _run_agent_command("common-transitions", session, csv, {"artist": artist, "top_n": top_n})
 
-    @app.command("discovery-context", help="Agent command: analyze artist discovery context as JSON.")
+    @app.command("discovery-context", help=_agent_help("Analyze artist discovery context."))
     def discovery_context(
         session: str | None = typer.Option(None, "--session", help="Named daemon session ID."),
         csv: Path | None = typer.Option(None, "--csv", help="Run one-shot against this scrobbles CSV."),
@@ -317,7 +335,7 @@ def register(app: typer.Typer) -> None:
     ):
         _run_agent_command("discovery-context", session, csv, {"artist": artist})
 
-    @app.command("critics-world", help="Agent command: explore critics world as JSON.")
+    @app.command("critics-world", help=_agent_help("Explore critics world."))
     def critics_world(
         session: str | None = typer.Option(None, "--session", help="Named daemon session ID."),
         csv: Path | None = typer.Option(None, "--csv", help="Run one-shot against this scrobbles CSV."),
@@ -326,7 +344,7 @@ def register(app: typer.Typer) -> None:
     ):
         _run_agent_command("critics-world", session, csv, {"year": year})
 
-    @app.command("album-acclaim", help="Agent command: analyze an album's critical acclaim as JSON.")
+    @app.command("album-acclaim", help=_agent_help("Analyze an album's critical acclaim."))
     def album_acclaim(
         session: str | None = typer.Option(None, "--session", help="Named daemon session ID."),
         csv: Path | None = typer.Option(None, "--csv", help="Run one-shot against this scrobbles CSV."),
@@ -337,7 +355,7 @@ def register(app: typer.Typer) -> None:
     ):
         _run_agent_command("album-acclaim", session, csv, {"artist": artist, "album": album, "year": year})
 
-    @app.command("validated-albums", help="Agent command: find albums validated by critics as JSON.")
+    @app.command("validated-albums", help=_agent_help("Find albums validated by critics."))
     def validated_albums(
         session: str | None = typer.Option(None, "--session", help="Named daemon session ID."),
         csv: Path | None = typer.Option(None, "--csv", help="Run one-shot against this scrobbles CSV."),
@@ -347,7 +365,7 @@ def register(app: typer.Typer) -> None:
     ):
         _run_agent_command("validated-albums", session, csv, {"year": year, "limit": limit})
 
-    @app.command("critic-profile", help="Agent command: analyze a critic profile as JSON.")
+    @app.command("critic-profile", help=_agent_help("Analyze a critic profile."))
     def critic_profile(
         session: str | None = typer.Option(None, "--session", help="Named daemon session ID."),
         csv: Path | None = typer.Option(None, "--csv", help="Run one-shot against this scrobbles CSV."),
@@ -357,7 +375,7 @@ def register(app: typer.Typer) -> None:
     ):
         _run_agent_command("critic-profile", session, csv, {"critic_name": critic_name, "year": year})
 
-    @app.command("search-critics-artist", help="Agent command: search critics lists for an artist as JSON.")
+    @app.command("search-critics-artist", help=_agent_help("Search critics lists for an artist."))
     def search_critics_artist(
         session: str | None = typer.Option(None, "--session", help="Named daemon session ID."),
         csv: Path | None = typer.Option(None, "--csv", help="Run one-shot against this scrobbles CSV."),
@@ -367,7 +385,7 @@ def register(app: typer.Typer) -> None:
     ):
         _run_agent_command("search-critics-artist", session, csv, {"artist": artist, "year": year})
 
-    @app.command("obsession-tracks", help="Agent command: find track obsessions as JSON.")
+    @app.command("obsession-tracks", help=_agent_help("Find track obsessions."))
     def obsession_tracks(
         session: str | None = typer.Option(None, "--session", help="Named daemon session ID."),
         csv: Path | None = typer.Option(None, "--csv", help="Run one-shot against this scrobbles CSV."),
@@ -377,7 +395,7 @@ def register(app: typer.Typer) -> None:
     ):
         _run_agent_command("obsession-tracks", session, csv, {"year": year, "min_plays": min_plays})
 
-    @app.command("one-track-artists", help="Agent command: find one-track artist relationships as JSON.")
+    @app.command("one-track-artists", help=_agent_help("Find one-track artist relationships."))
     def one_track_artists(
         session: str | None = typer.Option(None, "--session", help="Named daemon session ID."),
         csv: Path | None = typer.Option(None, "--csv", help="Run one-shot against this scrobbles CSV."),
@@ -392,7 +410,7 @@ def register(app: typer.Typer) -> None:
             {"year": year, "min_concentration": min_concentration},
         )
 
-    @app.command("ep-single-artists", help="Agent command: find EP/single-heavy artists as JSON.")
+    @app.command("ep-single-artists", help=_agent_help("Find EP/single-heavy artists."))
     def ep_single_artists(
         session: str | None = typer.Option(None, "--session", help="Named daemon session ID."),
         csv: Path | None = typer.Option(None, "--csv", help="Run one-shot against this scrobbles CSV."),
@@ -401,7 +419,7 @@ def register(app: typer.Typer) -> None:
     ):
         _run_agent_command("ep-single-artists", session, csv, {"year": year})
 
-    @app.command("overview-summary", help="Agent command: return overview summary as JSON.")
+    @app.command("overview-summary", help=_agent_help("Return overview summary."))
     def overview_summary(
         session: str | None = typer.Option(None, "--session", help="Named daemon session ID."),
         csv: Path | None = typer.Option(None, "--csv", help="Run one-shot against this scrobbles CSV."),
@@ -409,7 +427,7 @@ def register(app: typer.Typer) -> None:
     ):
         _run_agent_command("overview-summary", session, csv, {})
 
-    @app.command("discovered-artists", help="Agent command: list discovered artists as JSON.")
+    @app.command("discovered-artists", help=_agent_help("List discovered artists."))
     def discovered_artists(
         session: str | None = typer.Option(None, "--session", help="Named daemon session ID."),
         csv: Path | None = typer.Option(None, "--csv", help="Run one-shot against this scrobbles CSV."),
@@ -418,7 +436,7 @@ def register(app: typer.Typer) -> None:
     ):
         _run_agent_command("discovered-artists", session, csv, {"year": year})
 
-    @app.command("critics-lists", help="Agent command: list critics for a year as JSON.")
+    @app.command("critics-lists", help=_agent_help("List critics for a year."))
     def critics_lists(
         session: str | None = typer.Option(None, "--session", help="Named daemon session ID."),
         csv: Path | None = typer.Option(None, "--csv", help="Run one-shot against this scrobbles CSV."),

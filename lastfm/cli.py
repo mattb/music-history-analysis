@@ -18,6 +18,8 @@ app = typer.Typer(
         "  lastfm listening-stats --session music-2025 --json\n"
         "  lastfm blind-spots --session music-2025 --year 2025 --limit 20 --json\n"
         "  lastfm session-stop --session music-2025 --json\n"
+        "\n"
+        "Agent commands also support one-shot mode with --csv instead of --session.\n"
     ),
     no_args_is_help=True,
 )
