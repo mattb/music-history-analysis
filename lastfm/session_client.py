@@ -2,9 +2,11 @@ from __future__ import annotations
 
 import json
 import os
+import shlex
 import socket
 import subprocess
 import sys
+import time
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -37,9 +39,54 @@ def session_paths(session_id: str) -> SessionPaths:
     )
 
 
+def socket_is_connectable(socket_path: Path) -> bool:
+    if not socket_path.exists():
+        return False
+    with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as sock:
+        sock.settimeout(0.2)
+        try:
+            sock.connect(str(socket_path))
+        except OSError:
+            return False
+    return True
+
+
+def session_process_command(pid: int) -> str | None:
+    result = subprocess.run(
+        ["ps", "-p", str(pid), "-o", "command="],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    if result.returncode != 0:
+        return None
+    command = result.stdout.strip()
+    return command or None
+
+
+def session_process_matches(command: str | None, session_id: str) -> bool:
+    if not command:
+        return False
+    try:
+        parts = shlex.split(command)
+    except ValueError:
+        return False
+    if "lastfm.session_daemon" not in command or "--session-id" not in parts:
+        return False
+    index = parts.index("--session-id")
+    return index + 1 < len(parts) and parts[index + 1] == session_id
+
+
+def verify_session_process(pid: int, session_id: str) -> bool:
+    return session_process_matches(session_process_command(pid), session_id)
+
+
 def start_session(session_id: str, csv_path: Path, json_output: bool = True) -> subprocess.Popen:
     paths = session_paths(session_id)
     paths.root.mkdir(parents=True, exist_ok=True)
+    if socket_is_connectable(paths.socket):
+        raise RuntimeError(f"Session {session_id} is already running")
+
     cmd = [
         sys.executable,
         "-m",
@@ -95,6 +142,19 @@ def start_session(session_id: str, csv_path: Path, json_output: bool = True) -> 
         process.stdout.close()
 
     return process
+
+
+def stop_session(session_id: str) -> dict[str, Any]:
+    paths = session_paths(session_id)
+    pid = int(paths.pid.read_text())
+    if not verify_session_process(pid, session_id):
+        raise RuntimeError(f"Refusing to stop unverified session process {pid}")
+    os.kill(pid, 15)
+    for _ in range(20):
+        if not verify_session_process(pid, session_id):
+            break
+        time.sleep(0.05)
+    return {"stopped": True, "pid": pid}
 
 
 def read_metadata(session_id: str) -> dict[str, Any]:

@@ -13,7 +13,7 @@ from pathlib import Path
 from . import agent_tools
 from .agent_output import emit_event, error_envelope, success_envelope
 from .analysis_state import AnalysisState
-from .session_client import session_paths
+from .session_client import session_paths, socket_is_connectable
 
 
 class AgentRequestHandler(socketserver.StreamRequestHandler):
@@ -52,6 +52,17 @@ def main() -> None:
 
     paths = session_paths(args.session_id)
     paths.root.mkdir(parents=True, exist_ok=True)
+    if socket_is_connectable(paths.socket):
+        if args.json:
+            emit_event(
+                "failed",
+                session_id=args.session_id,
+                code="SESSION_ALREADY_RUNNING",
+                message=f"Session {args.session_id} is already running",
+            )
+        else:
+            print(f"Session {args.session_id} is already running", file=sys.stderr)
+        raise SystemExit(1)
     if paths.socket.exists():
         paths.socket.unlink()
 

@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-import os
+import json
 from contextlib import redirect_stdout
 from io import StringIO
 from pathlib import Path
@@ -12,7 +12,7 @@ import typer
 
 from . import agent_tools, analysis_state
 from .agent_output import error_envelope, print_json, success_envelope
-from .session_client import dispatch_to_session, read_metadata, session_paths, start_session
+from .session_client import dispatch_to_session, read_metadata, start_session, stop_session
 
 
 def _resolve_target(session: str | None, csv: Path | None) -> tuple[str | None, analysis_state.AnalysisState | None]:
@@ -61,13 +61,13 @@ def register(app: typer.Typer) -> None:
                 typer.echo(f"Started session {session_id} with pid {process.pid}")
         except Exception as exc:
             if json_output:
-                print_json(error_envelope(
+                typer.echo(json.dumps(error_envelope(
                     command="session-start",
                     code=type(exc).__name__.upper(),
                     message=str(exc),
                     retryable=False,
                     session_id=session_id,
-                ))
+                ), sort_keys=True))
             else:
                 typer.echo(f"Error: {exc}", err=True)
             raise typer.Exit(1)
@@ -102,14 +102,12 @@ def register(app: typer.Typer) -> None:
         json_output: bool = typer.Option(True, "--json", help="Emit structured JSON."),
     ):
         try:
-            paths = session_paths(session)
-            pid = int(paths.pid.read_text())
-            os.kill(pid, 15)
-            payload = success_envelope("session-stop", {"stopped": True, "pid": pid}, session_id=session)
+            result = stop_session(session)
+            payload = success_envelope("session-stop", result, session_id=session)
             if json_output:
                 print_json(payload)
             else:
-                typer.echo(f"Stopped session {session} with pid {pid}")
+                typer.echo(f"Stopped session {session} with pid {result['pid']}")
         except Exception as exc:
             if json_output:
                 print_json(error_envelope(
