@@ -12,7 +12,16 @@ import typer
 
 from . import agent_tools, analysis_state
 from .agent_output import error_envelope, print_json, success_envelope
-from .session_client import dispatch_to_session, read_metadata, start_session, stop_session
+from .session_client import (
+    dispatch_to_session,
+    list_sessions,
+    read_metadata,
+    remove_session_files,
+    session_paths,
+    socket_is_connectable,
+    start_session,
+    stop_session,
+)
 
 
 def _resolve_target(session: str | None, csv: Path | None) -> tuple[str | None, analysis_state.AnalysisState | None]:
@@ -96,6 +105,14 @@ def register(app: typer.Typer) -> None:
                 typer.echo(f"Error: {exc}", err=True)
             raise typer.Exit(1)
 
+    @app.command("session-list", help="List known Last.fm daemon sessions.")
+    def session_list(json_output: bool = typer.Option(True, "--json", help="Emit structured JSON.")):
+        payload = success_envelope("session-list", {"sessions": list_sessions()}, session_id=None)
+        if json_output:
+            print_json(payload)
+        else:
+            typer.echo(payload["result"])
+
     @app.command("session-stop", help="Stop a named daemon session.")
     def session_stop(
         session: str = typer.Option(..., "--session", help="Session ID."),
@@ -120,6 +137,43 @@ def register(app: typer.Typer) -> None:
             else:
                 typer.echo(f"Error: {exc}", err=True)
             raise typer.Exit(1)
+
+    @app.command("session-cleanup", help="Remove files for stopped or stale sessions.")
+    def session_cleanup(
+        session: str | None = typer.Option(None, "--session", help="Clean one session ID."),
+        json_output: bool = typer.Option(True, "--json", help="Emit structured JSON."),
+    ):
+        cleaned = []
+        skipped = []
+        errors = []
+
+        def cleanup_one(session_id: str) -> None:
+            paths = session_paths(session_id)
+            if not paths.root.exists():
+                errors.append({"session_id": session_id, "code": "SESSION_NOT_FOUND"})
+                return
+            if socket_is_connectable(paths.socket):
+                skipped.append({"session_id": session_id, "reason": "live_session"})
+                return
+            remove_session_files(session_id)
+            cleaned.append(session_id)
+
+        if session:
+            cleanup_one(session)
+        else:
+            for item in list_sessions():
+                session_id = item.get("session_id")
+                if not session_id:
+                    errors.append({"metadata": item, "code": "MISSING_SESSION_ID"})
+                    continue
+                cleanup_one(session_id)
+
+        result = {"cleaned": cleaned, "skipped": skipped, "errors": errors}
+        payload = success_envelope("session-cleanup", result, session_id=session)
+        if json_output:
+            print_json(payload)
+        else:
+            typer.echo(result)
 
     @app.command("taste-evolution", help="Agent command: analyze taste evolution as JSON.")
     def taste_evolution(

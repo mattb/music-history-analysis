@@ -1,8 +1,11 @@
+import json
 from pathlib import Path
 
 import lastfm.session_client as session_client
 from lastfm.session_client import (
     SessionPaths,
+    list_sessions,
+    remove_session_files,
     session_paths,
     session_process_matches,
     start_session,
@@ -118,3 +121,20 @@ def test_stop_session_refuses_unverified_pid(tmp_path, monkeypatch):
         assert str(exc) == "Refusing to stop unverified session process 12345"
     else:
         raise AssertionError("expected stale pid failure")
+
+
+def test_list_sessions_reads_metadata(tmp_path, monkeypatch):
+    monkeypatch.setenv("LASTFM_SESSION_ROOT", str(tmp_path))
+    paths = session_paths("a")
+    paths.root.mkdir(parents=True)
+    paths.metadata.write_text(json.dumps({"session_id": "a", "pid": 123}))
+    assert list_sessions() == [{"session_id": "a", "pid": 123}]
+
+
+def test_remove_session_files_removes_directory(tmp_path, monkeypatch):
+    monkeypatch.setenv("LASTFM_SESSION_ROOT", str(tmp_path))
+    paths = session_paths("a")
+    paths.root.mkdir(parents=True)
+    paths.metadata.write_text("{}")
+    remove_session_files("a")
+    assert not paths.root.exists()

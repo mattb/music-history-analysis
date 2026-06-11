@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import os
+import shutil
 import shlex
 import socket
 import subprocess
@@ -162,6 +163,23 @@ def read_metadata(session_id: str) -> dict[str, Any]:
     if not path.exists():
         raise FileNotFoundError(f"No metadata found for session {session_id}")
     return json.loads(path.read_text())
+
+
+def list_sessions() -> list[dict[str, Any]]:
+    root = session_root()
+    if not root.exists():
+        return []
+
+    sessions = []
+    for metadata_path in sorted(root.glob("*/metadata.json")):
+        sessions.append(json.loads(metadata_path.read_text()))
+    return sessions
+
+
+def remove_session_files(session_id: str) -> None:
+    paths = session_paths(session_id)
+    if paths.root.exists():
+        shutil.rmtree(paths.root)
 
 
 def dispatch_to_session(session_id: str, command: str, params: dict[str, Any]) -> Any:
