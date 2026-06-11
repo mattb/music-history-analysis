@@ -125,7 +125,9 @@ lastfm fetch YOUR_USERNAME --start-year 2024
 | `lastfm/evaluation.py` | Embedding quality evaluation framework |
 | `lastfm/release_years.py` | MusicBrainz API integration (rate-limited) |
 | `lastfm/musicbrainz_db.py` | Local MusicBrainz SQLite database |
-| `lastfm/mcp_server.py` | MCP server exposing analysis tools for LLM agents |
+| `lastfm/commands_agent.py` | Agent-native top-level analysis and session commands |
+| `lastfm/session_daemon.py` | Long-lived agent session daemon |
+| `lastfm/session_client.py` | Client helpers for session lifecycle and command dispatch |
 
 ## Album Listening Criteria
 
@@ -431,7 +433,7 @@ Embeddings are cached per-CSV in `~/.cache/lastfm-analysis/<csv_hash>/`:
 - `critics_embeddings.pkl` - Critics space embeddings
 - `critic_vectors.pkl` - Per-critic taste vectors
 
-The MCP server and `visualize genome` command use these embeddings for similarity queries and 2D projections.
+The agent-native CLI and `visualize genome` command use these embeddings for similarity queries and 2D projections.
 
 ## HTML Report Generation
 
@@ -541,57 +543,47 @@ The CLI provides two comprehensive report commands:
 - Metadata breakdown for that year
 - Produces both console and HTML output
 
-## MCP Server
+## Agent-Native CLI
 
-The analysis tools are also available as an MCP (Model Context Protocol) server for LLM agents.
+The analysis tools are available as top-level `lastfm` commands for LLM agents. Commands can run one-shot with `--csv` or dispatch to a long-lived named session.
 
-### Running the Server
+### Session Workflow
 
 ```bash
-# Run with default CSV auto-detection
-python -m lastfm.mcp_server
+# Start a long-lived session
+lastfm session-start --session-id music-2025 --csv /path/to/scrobbles.csv --json
 
-# Run with explicit CSV path
-LASTFM_CSV=/path/to/scrobbles.csv python -m lastfm.mcp_server
+# Check session health and metadata
+lastfm session-status --session music-2025 --json
+
+# Run analysis commands against the session
+lastfm listening-stats --session music-2025 --json
+lastfm blind-spots --session music-2025 --year 2025 --limit 20 --json
+
+# Stop the session
+lastfm session-stop --session music-2025 --json
 ```
 
-### Available Tools
+Session metadata and sockets live under `~/.cache/lastfm-analysis/sessions/<session-id>/`.
 
-**Narrative Tools** (high-level "story" tools):
-- `explore_taste_evolution(start_year, end_year)` - Analyze taste evolution over time
-- `find_musical_bridges(artist, top_n)` - Find artists bridging to new discoveries
-- `discover_blind_spots(year, min_critics, limit)` - Find acclaimed unheard albums
-- `get_artist_deep_dive(artist)` - Complete analysis of relationship with an artist
+### Available Agent Commands
 
-**Precise Tools** (direct queries):
-- `find_similar_artists(artist, source, top_n)` - Find similar artists (user or critics space)
-- `get_listening_stats(year)` - Get listening statistics
-- `get_top_artists(year, limit)` - Get top artists by play count
-- `get_critic_alignment(limit)` - Find taste-aligned critics
+**Narrative commands**:
+- `taste-evolution` - Analyze taste evolution over time
+- `musical-bridges` - Find artists bridging to new discoveries
+- `blind-spots` - Find acclaimed unheard albums
+- `artist-deep-dive` - Complete analysis of relationship with one or more artists
 
-**Resources**:
-- `overview://summary` - Full listening overview
-- `artists://discovered/{year}` - Artists discovered in a year
-- `critics://lists/{year}` - Critics' year-end lists
+**Direct query commands**:
+- `similar-artists` - Find similar artists in user or critics space
+- `listening-stats` - Get listening statistics
+- `top-artists` - Get top artists by play count
+- `critic-alignment` - Find taste-aligned critics
 
-**Prompts**:
-- `taste_journey` - Guide for exploring musical journey
-- `recommendation_session(mood)` - Guide for personalized recommendations
-
-### Claude Desktop Configuration
-
-Add to `claude_desktop_config.json`:
-```json
-{
-  "mcpServers": {
-    "lastfm": {
-      "command": "python",
-      "args": ["-m", "lastfm.mcp_server"],
-      "cwd": "/path/to/music-2025"
-    }
-  }
-}
-```
+**Resource-style commands**:
+- `overview-summary` - Full listening overview
+- `discovered-artists` - Artists discovered in a year
+- `critics-lists` - Critics' year-end lists
 
 ## Testing Commands
 
@@ -673,4 +665,3 @@ Key packages (see pyproject.toml):
 - `numpy` - Numerical operations
 - `umap-learn` - UMAP projection for genome visualization
 - `datamapplot` - Plotting for genome visualization
-- `fastmcp` - MCP server framework
