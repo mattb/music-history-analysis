@@ -51,7 +51,50 @@ def start_session(session_id: str, csv_path: Path, json_output: bool = True) -> 
     ]
     if json_output:
         cmd.append("--json")
-    return subprocess.Popen(cmd)
+
+    if not json_output:
+        return subprocess.Popen(
+            cmd,
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            start_new_session=True,
+        )
+
+    process = subprocess.Popen(
+        cmd,
+        stdin=subprocess.DEVNULL,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.DEVNULL,
+        text=True,
+        bufsize=1,
+        start_new_session=True,
+    )
+    if process.stdout is None:
+        raise RuntimeError(f"Could not read startup events for session {session_id}")
+
+    try:
+        while True:
+            line = process.stdout.readline()
+            if not line:
+                returncode = process.poll()
+                if returncode is None:
+                    raise RuntimeError(f"Session {session_id} closed startup output before ready")
+                raise RuntimeError(f"Session {session_id} exited before ready with code {returncode}")
+
+            sys.stdout.write(line)
+            sys.stdout.flush()
+
+            try:
+                event = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            if event.get("event") == "ready":
+                break
+    finally:
+        process.stdout.close()
+
+    return process
 
 
 def read_metadata(session_id: str) -> dict[str, Any]:
