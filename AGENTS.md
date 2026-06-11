@@ -40,7 +40,7 @@ This repo contains a Python CLI (`lastfm`) for analyzing Last.fm listening histo
 - Follow `WRITING-STYLE.md` (first-person, concise, hack-diary tone).
 
 ## Testing
-- There are no automated tests in this repo.
+- Automated tests use pytest. Run `uv run --extra dev python -m pytest` before committing agent CLI or analysis changes.
 
 ## Areas You Might Edit
 - CLI behavior and commands: `lastfm/cli.py`, `lastfm/commands/*.py`
