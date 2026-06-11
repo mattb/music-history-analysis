@@ -7,11 +7,18 @@ from rich.console import Console
 import httpx
 import webbrowser
 
-from . import data, lastfm_api
+from . import commands_agent, data, lastfm_api
 from .commands import listen, critics, history, metadata, spotify, visualize, eval
 
 app = typer.Typer(
-    help="Analyze your Last.fm listening history.",
+    help=(
+        "Analyze your Last.fm listening history.\n\n"
+        "Agent workflow:\n"
+        "  lastfm session-start --session-id music-2025 --csv recenttracks.csv --json\n"
+        "  lastfm listening-stats --session music-2025 --json\n"
+        "  lastfm blind-spots --session music-2025 --year 2025 --limit 20 --json\n"
+        "  lastfm session-stop --session music-2025 --json\n"
+    ),
     no_args_is_help=True,
 )
 console = Console()
@@ -65,6 +72,7 @@ app.add_typer(metadata.app, name="metadata", help="MusicBrainz metadata enrichme
 app.add_typer(spotify.app, name="spotify", help="Spotify integration")
 app.add_typer(visualize.app, name="visualize", help="Generate visual representations")
 app.add_typer(eval.app, name="eval", help="Evaluate embedding and recommendation quality")
+commands_agent.register(app)
 
 
 # Root-level commands (most common operations)
@@ -3239,3 +3247,7 @@ def generate_overview_html(
 </html>"""
 
     return html
+
+
+if __name__ == "__main__":
+    app()
