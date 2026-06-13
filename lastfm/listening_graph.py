@@ -27,11 +27,15 @@ class GraphConfig:
 
 
 def _validate_config(config: GraphConfig) -> None:
+    if (
+        not math.isfinite(config.community_resolution)
+        or config.community_resolution <= 0
+    ):
+        raise ValueError("community_resolution must be finite and positive")
     positive = {
         "gap_minutes": config.gap_minutes,
         "min_artist_plays": config.min_artist_plays,
         "min_shared_sessions": config.min_shared_sessions,
-        "community_resolution": config.community_resolution,
         "betweenness_samples": config.betweenness_samples,
     }
     for name, value in positive.items():
@@ -218,8 +222,10 @@ def _focus_graph(graph: nx.Graph, focus_artist: str | None, hops: int) -> nx.Gra
         for node, attrs in graph.nodes(data=True)
         if attrs["name"].casefold() == focus_artist.casefold()
     ]
-    if len(matches) != 1:
+    if not matches:
         raise ValueError("focus artist not found")
+    if len(matches) > 1:
+        raise ValueError(f"focus artist is ambiguous: {', '.join(sorted(matches))}")
     distances = nx.single_source_shortest_path_length(graph, matches[0], cutoff=hops)
     return graph.subgraph(sorted(distances)).copy()
 

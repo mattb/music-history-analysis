@@ -191,6 +191,22 @@ def test_listening_graph_cli_rejects_nonpositive_options(sample_csv, option):
     assert "positive" in result.output
 
 
+@pytest.mark.parametrize("resolution", ["nan", "inf", "-inf"])
+def test_listening_graph_cli_rejects_nonfinite_resolution(sample_csv, resolution):
+    result = runner.invoke(
+        app,
+        [
+            "listening-graph",
+            "--csv",
+            str(sample_csv),
+            "--community-resolution",
+            resolution,
+        ],
+    )
+    assert result.exit_code == 2
+    assert "finite and positive" in result.output
+
+
 def test_listening_graph_cli_forwards_every_option(monkeypatch):
     import lastfm.commands_agent
 

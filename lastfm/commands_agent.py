@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import math
 from contextlib import redirect_stdout
 from io import StringIO
 from pathlib import Path
@@ -91,13 +92,17 @@ def register(app: typer.Typer) -> None:
         artist: str | None = typer.Option(None, "--artist", help="Exact display name to focus on."),
         hops: int = typer.Option(1, "--hops", help="Neighborhood radius."),
         output_format: str = typer.Option("json", "--format", help="Result format: json or graphml."),
-        json_output: bool = typer.Option(True, "--json", help="Emit structured JSON on stdout."),
+        _json_output: bool = typer.Option(True, "--json", help="Emit structured JSON on stdout."),
     ):
+        if not math.isfinite(community_resolution) or community_resolution <= 0:
+            raise typer.BadParameter(
+                "community-resolution must be finite and positive",
+                param_hint="--community-resolution",
+            )
         values = {
             "gap-minutes": gap_minutes,
             "min-artist-plays": min_artist_plays,
             "min-shared-sessions": min_shared_sessions,
-            "community-resolution": community_resolution,
             "betweenness-samples": betweenness_samples,
             "hops": hops,
         }

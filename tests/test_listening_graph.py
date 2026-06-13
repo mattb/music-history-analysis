@@ -234,6 +234,28 @@ def test_invalid_analysis_options(kwargs, message):
         analyze_listening_graph(rows([]), config(), **kwargs)
 
 
+@pytest.mark.parametrize("resolution", [float("nan"), float("inf"), float("-inf")])
+def test_nonfinite_community_resolution_is_rejected(resolution):
+    with pytest.raises(
+        ValueError, match="community_resolution must be finite and positive"
+    ):
+        analyze_listening_graph(rows([]), config(community_resolution=resolution))
+
+
+def test_focus_artist_reports_ambiguous_exact_display_matches():
+    frame = rows(
+        [
+            ("2024-01-01T00:00:00Z", "Same", "ABC"),
+            ("2024-01-01T00:01:00Z", "Same", ""),
+        ]
+    )
+    with pytest.raises(
+        ValueError,
+        match=r"focus artist is ambiguous: mbid:abc, name:same",
+    ):
+        analyze_listening_graph(frame, config(), focus_artist="same")
+
+
 def test_public_graph_builders_validate_positive_config():
     with pytest.raises(ValueError, match="gap_minutes must be positive"):
         build_session_graph(rows([]), config(gap_minutes=0))
