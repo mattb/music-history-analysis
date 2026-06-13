@@ -195,6 +195,7 @@ def test_remove_owned_runtime_files_removes_socket_and_owned_pid(tmp_path):
         socket=tmp_path / "lastfm.sock",
         pid=tmp_path / "pid",
         metadata=tmp_path / "metadata.json",
+        restart_lock=tmp_path.parent / ".locks" / "test-session.lock",
     )
     paths.socket.write_text("socket")
     paths.pid.write_text("123")
@@ -213,6 +214,7 @@ def test_remove_owned_runtime_files_preserves_different_pid(tmp_path):
         socket=tmp_path / "lastfm.sock",
         pid=tmp_path / "pid",
         metadata=tmp_path / "metadata.json",
+        restart_lock=tmp_path.parent / ".locks" / "test-session.lock",
     )
     paths.socket.write_text("socket")
     paths.pid.write_text("456")
@@ -234,6 +236,7 @@ def test_remove_owned_runtime_files_preserves_socket_without_owned_pid(
         socket=tmp_path / "lastfm.sock",
         pid=tmp_path / "pid",
         metadata=tmp_path / "metadata.json",
+        restart_lock=tmp_path.parent / ".locks" / "test-session.lock",
     )
     paths.socket.write_text("socket")
     if pid_contents is not None:
@@ -252,6 +255,7 @@ def test_main_removes_runtime_paths_before_closing_server(tmp_path, monkeypatch)
         socket=tmp_path / "lastfm.sock",
         pid=tmp_path / "pid",
         metadata=tmp_path / "metadata.json",
+        restart_lock=tmp_path.parent / ".locks" / "test-session.lock",
     )
     events = []
     remove_runtime_files = session_daemon.remove_owned_runtime_files

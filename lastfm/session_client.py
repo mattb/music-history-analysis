@@ -1,17 +1,25 @@
 from __future__ import annotations
 
 import fcntl
+import errno
 import json
 import os
+import queue
 import shlex
 import shutil
 import socket
 import subprocess
 import sys
+import threading
 import time
+from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, TextIO
+from typing import Any, Iterator, Literal, TextIO
+
+
+DEFAULT_STARTUP_TIMEOUT_SECONDS = 120.0
+PROCESS_STOP_TIMEOUT_SECONDS = 5.0
 
 
 @dataclass(frozen=True)
@@ -42,13 +50,14 @@ def session_root() -> Path:
 
 
 def session_paths(session_id: str) -> SessionPaths:
-    root = session_root() / session_id
+    sessions_root = session_root()
+    root = sessions_root / session_id
     return SessionPaths(
         root=root,
         socket=root / "lastfm.sock",
         pid=root / "pid",
         metadata=root / "metadata.json",
-        restart_lock=root / "restart.lock",
+        restart_lock=sessions_root / ".locks" / f"{session_id}.lock",
     )
 
 
@@ -142,7 +151,10 @@ def start_session(
 
 
 def _start_session_until_ready(
-    session_id: str, csv_path: Path, event_stream: TextIO | None = None
+    session_id: str,
+    csv_path: Path,
+    event_stream: TextIO | None = None,
+    startup_timeout_seconds: float = DEFAULT_STARTUP_TIMEOUT_SECONDS,
 ) -> subprocess.Popen:
     cmd = [
         sys.executable,
@@ -163,12 +175,49 @@ def _start_session_until_ready(
         bufsize=1,
         start_new_session=True,
     )
-    if process.stdout is None:
-        raise RuntimeError(f"Could not read startup events for session {session_id}")
-
+    ready = False
     try:
+        if process.stdout is None:
+            raise RuntimeError(
+                f"Could not read startup events for session {session_id}"
+            )
+
+        startup_events: queue.Queue[tuple[str, object]] = queue.Queue()
+
+        def read_startup_events() -> None:
+            try:
+                while True:
+                    line = process.stdout.readline()
+                    startup_events.put(("line", line))
+                    if not line:
+                        return
+            except BaseException as exc:
+                startup_events.put(("error", exc))
+
+        threading.Thread(target=read_startup_events, daemon=True).start()
+        deadline = time.monotonic() + startup_timeout_seconds
         while True:
-            line = process.stdout.readline()
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                raise RuntimeError(
+                    f"Session {session_id} timed out waiting for ready after "
+                    f"{startup_timeout_seconds:g} seconds"
+                )
+            try:
+                kind, payload = startup_events.get(timeout=remaining)
+            except queue.Empty as exc:
+                raise RuntimeError(
+                    f"Session {session_id} timed out waiting for ready after "
+                    f"{startup_timeout_seconds:g} seconds"
+                ) from exc
+
+            if kind == "error":
+                raise RuntimeError(
+                    f"Could not read startup events for session {session_id}"
+                ) from payload
+            line = payload
+            if not isinstance(line, str):
+                raise RuntimeError(f"Invalid startup output for session {session_id}")
             if not line:
                 returncode = process.poll()
                 if returncode is None:
@@ -185,14 +234,36 @@ def _start_session_until_ready(
 
             try:
                 event = json.loads(line)
-            except json.JSONDecodeError:
-                continue
+            except json.JSONDecodeError as exc:
+                raise RuntimeError(
+                    f"Session {session_id} emitted invalid startup JSON"
+                ) from exc
             if event.get("event") == "ready":
+                ready = True
                 break
+    except BaseException:
+        _terminate_started_process(process)
+        raise
     finally:
-        process.stdout.close()
+        if process.stdout is not None:
+            process.stdout.close()
 
+    if not ready:
+        raise RuntimeError(f"Session {session_id} did not become ready")
     return process
+
+
+def _terminate_started_process(process: subprocess.Popen) -> None:
+    if process.poll() is None:
+        try:
+            process.terminate()
+        except ProcessLookupError:
+            pass
+    try:
+        process.wait(timeout=PROCESS_STOP_TIMEOUT_SECONDS)
+    except subprocess.TimeoutExpired:
+        process.kill()
+        process.wait()
 
 
 def stop_session(session_id: str) -> dict[str, Any]:
@@ -235,11 +306,18 @@ def persisted_session_csv(session_id: str) -> Path:
     return csv_path
 
 
-def restart_session(session_id: str) -> None:
+@contextmanager
+def session_restart_lock(session_id: str) -> Iterator[SessionPaths]:
     paths = session_paths(session_id)
-    paths.root.mkdir(parents=True, exist_ok=True)
+    paths.restart_lock.parent.mkdir(parents=True, exist_ok=True)
     with paths.restart_lock.open("a") as lock_file:
         fcntl.flock(lock_file.fileno(), fcntl.LOCK_EX)
+        yield paths
+
+
+def restart_session(session_id: str) -> None:
+    with session_restart_lock(session_id) as paths:
+        paths.root.mkdir(parents=True, exist_ok=True)
         if socket_is_connectable(paths.socket):
             return
         csv_path = persisted_session_csv(session_id)
@@ -261,10 +339,14 @@ def list_sessions() -> list[dict[str, Any]]:
     return sessions
 
 
-def remove_session_files(session_id: str) -> None:
-    paths = session_paths(session_id)
-    if paths.root.exists():
+def remove_session_files(session_id: str) -> Literal["removed", "missing", "live"]:
+    with session_restart_lock(session_id) as paths:
+        if not paths.root.exists():
+            return "missing"
+        if session_is_live(session_id):
+            return "live"
         shutil.rmtree(paths.root)
+        return "removed"
 
 
 def _dispatch_once(session_id: str, command: str, params: dict[str, Any]) -> Any:
@@ -294,19 +376,38 @@ def _dispatch_once(session_id: str, command: str, params: dict[str, Any]) -> Any
     return response["result"]
 
 
-RECOVERABLE_TRANSPORT_ERRORS = (
-    FileNotFoundError,
-    ConnectionRefusedError,
-    ConnectionResetError,
-    socket.timeout,
-    json.JSONDecodeError,
-    UnicodeDecodeError,
-)
+RECOVERABLE_SOCKET_ERRNOS = {
+    errno.ENOENT,
+    errno.ECONNREFUSED,
+    errno.ECONNRESET,
+    errno.ECONNABORTED,
+    errno.EPIPE,
+    errno.ENOTCONN,
+}
+
+
+def _is_recoverable_transport_error(exc: BaseException) -> bool:
+    if isinstance(exc, (json.JSONDecodeError, UnicodeDecodeError, socket.timeout)):
+        return True
+    if isinstance(
+        exc,
+        (
+            FileNotFoundError,
+            ConnectionRefusedError,
+            ConnectionResetError,
+            ConnectionAbortedError,
+            BrokenPipeError,
+        ),
+    ):
+        return True
+    return isinstance(exc, OSError) and exc.errno in RECOVERABLE_SOCKET_ERRNOS
 
 
 def dispatch_to_session(session_id: str, command: str, params: dict[str, Any]) -> Any:
     try:
         return _dispatch_once(session_id, command, params)
-    except RECOVERABLE_TRANSPORT_ERRORS:
+    except (OSError, json.JSONDecodeError, UnicodeDecodeError) as exc:
+        if not _is_recoverable_transport_error(exc):
+            raise
         restart_session(session_id)
     return _dispatch_once(session_id, command, params)

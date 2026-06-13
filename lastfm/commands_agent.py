@@ -17,8 +17,6 @@ from .session_client import (
     list_sessions,
     read_metadata,
     remove_session_files,
-    session_is_live,
-    session_paths,
     start_session,
     stop_session,
 )
@@ -427,14 +425,13 @@ def register(app: typer.Typer) -> None:
         errors = []
 
         def cleanup_one(session_id: str) -> None:
-            paths = session_paths(session_id)
-            if not paths.root.exists():
+            outcome = remove_session_files(session_id)
+            if outcome == "missing":
                 errors.append({"session_id": session_id, "code": "SESSION_NOT_FOUND"})
                 return
-            if session_is_live(session_id):
+            if outcome == "live":
                 skipped.append({"session_id": session_id, "reason": "live_session"})
                 return
-            remove_session_files(session_id)
             cleaned.append(session_id)
 
         if session:

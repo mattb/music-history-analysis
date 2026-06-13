@@ -1,3 +1,4 @@
+import errno
 import json
 import socket
 import threading
@@ -29,7 +30,7 @@ def test_session_paths_are_isolated_by_id(tmp_path, monkeypatch):
     assert paths.socket == tmp_path / "music-2025" / "lastfm.sock"
     assert paths.pid == tmp_path / "music-2025" / "pid"
     assert paths.metadata == tmp_path / "music-2025" / "metadata.json"
-    assert paths.restart_lock == tmp_path / "music-2025" / "restart.lock"
+    assert paths.restart_lock == tmp_path / ".locks" / "music-2025.lock"
 
 
 def write_session_metadata(tmp_path: Path, session_id: str, csv_path: object) -> None:
@@ -129,8 +130,8 @@ def test_restart_rejects_invalid_metadata_without_spawning(
 ):
     monkeypatch.setenv("LASTFM_SESSION_ROOT", str(tmp_path))
     paths = session_paths("music-2025")
-    paths.root.mkdir(parents=True)
     if metadata is not None:
+        paths.root.mkdir(parents=True)
         paths.metadata.write_text(
             metadata if isinstance(metadata, str) else json.dumps(metadata)
         )
@@ -143,14 +144,18 @@ def test_restart_rejects_invalid_metadata_without_spawning(
 
     with pytest.raises(error_type, match=message):
         session_client.restart_session("music-2025")
+    assert paths.root.exists()
 
 
 @pytest.mark.parametrize(
     "first_error",
     [
         ConnectionRefusedError("refused"),
+        ConnectionAbortedError("aborted"),
+        BrokenPipeError("broken pipe"),
         socket.timeout("timed out"),
         UnicodeDecodeError("utf-8", b"\xff", 0, 1, "invalid start byte"),
+        OSError(errno.ENOTCONN, "not connected"),
     ],
 )
 def test_dispatch_recovers_from_stale_socket_transport_errors(monkeypatch, first_error):
@@ -168,6 +173,28 @@ def test_dispatch_recovers_from_stale_socket_transport_errors(monkeypatch, first
 
     assert session_client.dispatch_to_session("music-2025", "stats", {}) == {"ok": True}
     assert restarts == ["music-2025"]
+
+
+@pytest.mark.parametrize(
+    "first_error",
+    [PermissionError(errno.EACCES, "denied"), OSError(errno.EINVAL, "invalid")],
+)
+def test_dispatch_does_not_recover_nontransport_os_errors(monkeypatch, first_error):
+    monkeypatch.setattr(
+        session_client,
+        "_dispatch_once",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(first_error),
+    )
+    monkeypatch.setattr(
+        session_client,
+        "restart_session",
+        lambda _session_id: pytest.fail("nontransport errors must not restart"),
+    )
+
+    with pytest.raises(OSError) as exc_info:
+        session_client.dispatch_to_session("music-2025", "stats", {})
+
+    assert exc_info.value is first_error
 
 
 def assert_response_transport_recovery(
@@ -388,6 +415,191 @@ def test_start_session_until_ready_is_silent_without_event_stream(
     assert capsys.readouterr().out == ""
 
 
+def test_start_session_until_ready_times_out_and_reaps_process(tmp_path, monkeypatch):
+    released = threading.Event()
+    calls = []
+
+    class BlockingStdout:
+        def readline(self):
+            released.wait()
+            return ""
+
+        def close(self):
+            calls.append("close")
+            released.set()
+
+    class FakeProcess:
+        stdout = BlockingStdout()
+
+        def poll(self):
+            return None
+
+        def terminate(self):
+            calls.append("terminate")
+            released.set()
+
+        def wait(self, timeout=None):
+            calls.append(("wait", timeout))
+            return 0
+
+        def kill(self):
+            calls.append("kill")
+
+    monkeypatch.setattr(
+        session_client.subprocess, "Popen", lambda *_a, **_k: FakeProcess()
+    )
+
+    with pytest.raises(RuntimeError, match="timed out waiting for ready"):
+        session_client._start_session_until_ready(
+            "music-2025",
+            tmp_path / "recenttracks-test.csv",
+            startup_timeout_seconds=0.02,
+        )
+
+    assert "terminate" in calls
+    assert any(isinstance(call, tuple) and call[0] == "wait" for call in calls)
+    assert "close" in calls
+    assert "kill" not in calls
+
+
+def test_start_session_until_ready_reaps_process_when_event_stream_fails(
+    tmp_path, monkeypatch
+):
+    calls = []
+
+    class FakeStdout:
+        def __init__(self):
+            self.lines = iter(['{"event":"start"}\n', '{"event":"ready"}\n'])
+
+        def readline(self):
+            return next(self.lines, "")
+
+        def close(self):
+            calls.append("close")
+
+    class FakeProcess:
+        stdout = FakeStdout()
+
+        def poll(self):
+            return None
+
+        def terminate(self):
+            calls.append("terminate")
+
+        def wait(self, timeout=None):
+            calls.append(("wait", timeout))
+            return 0
+
+        def kill(self):
+            calls.append("kill")
+
+    class BrokenStream:
+        def write(self, _line):
+            raise OSError("stream failed")
+
+        def flush(self):
+            pass
+
+    monkeypatch.setattr(
+        session_client.subprocess, "Popen", lambda *_a, **_k: FakeProcess()
+    )
+
+    with pytest.raises(OSError, match="stream failed"):
+        session_client._start_session_until_ready(
+            "music-2025",
+            tmp_path / "recenttracks-test.csv",
+            event_stream=BrokenStream(),
+        )
+
+    assert "terminate" in calls
+    assert any(isinstance(call, tuple) and call[0] == "wait" for call in calls)
+    assert "close" in calls
+
+
+def test_start_session_until_ready_kills_process_that_ignores_terminate(
+    tmp_path, monkeypatch
+):
+    calls = []
+
+    class FakeProcess:
+        stdout = None
+
+        def poll(self):
+            return None
+
+        def terminate(self):
+            calls.append("terminate")
+
+        def wait(self, timeout=None):
+            calls.append(("wait", timeout))
+            if timeout is not None:
+                raise session_client.subprocess.TimeoutExpired("daemon", timeout)
+            return 0
+
+        def kill(self):
+            calls.append("kill")
+
+    monkeypatch.setattr(
+        session_client.subprocess, "Popen", lambda *_a, **_k: FakeProcess()
+    )
+
+    with pytest.raises(RuntimeError, match="Could not read startup events"):
+        session_client._start_session_until_ready(
+            "music-2025", tmp_path / "recenttracks-test.csv"
+        )
+
+    assert calls == [
+        "terminate",
+        ("wait", session_client.PROCESS_STOP_TIMEOUT_SECONDS),
+        "kill",
+        ("wait", None),
+    ]
+
+
+def test_start_session_until_ready_reaps_process_on_malformed_output(
+    tmp_path, monkeypatch
+):
+    calls = []
+
+    class FakeStdout:
+        def __init__(self):
+            self.lines = iter(["not-json\n", ""])
+
+        def readline(self):
+            return next(self.lines)
+
+        def close(self):
+            calls.append("close")
+
+    class FakeProcess:
+        stdout = FakeStdout()
+
+        def poll(self):
+            return None
+
+        def terminate(self):
+            calls.append("terminate")
+
+        def wait(self, timeout=None):
+            calls.append(("wait", timeout))
+            return 0
+
+        def kill(self):
+            calls.append("kill")
+
+    monkeypatch.setattr(
+        session_client.subprocess, "Popen", lambda *_a, **_k: FakeProcess()
+    )
+
+    with pytest.raises(RuntimeError, match="invalid startup JSON"):
+        session_client._start_session_until_ready(
+            "music-2025", tmp_path / "recenttracks-test.csv"
+        )
+
+    assert "terminate" in calls
+    assert "close" in calls
+
+
 def test_start_session_refuses_existing_reachable_session(tmp_path, monkeypatch):
     monkeypatch.setenv("LASTFM_SESSION_ROOT", str(tmp_path))
     monkeypatch.setattr(session_client, "socket_is_connectable", lambda _path: True)
@@ -471,6 +683,7 @@ def test_remove_session_files_removes_directory(tmp_path, monkeypatch):
     paths.metadata.write_text("{}")
     remove_session_files("a")
     assert not paths.root.exists()
+    assert paths.restart_lock.exists()
 
 
 def test_session_cleanup_skips_pid_verified_live_session(tmp_path, monkeypatch):
@@ -515,3 +728,42 @@ def test_session_cleanup_all_removes_stale_corrupt_metadata(tmp_path, monkeypatc
     assert payload["result"]["skipped"] == []
     assert payload["result"]["errors"] == []
     assert not paths.root.exists()
+
+
+def test_session_cleanup_skips_session_revived_while_waiting_for_lock(
+    tmp_path, monkeypatch
+):
+    monkeypatch.setenv("LASTFM_SESSION_ROOT", str(tmp_path))
+    paths = session_paths("race")
+    paths.root.mkdir(parents=True)
+    paths.metadata.write_text(json.dumps({"session_id": "race"}))
+    revived = threading.Event()
+    monkeypatch.setattr(
+        session_client, "socket_is_connectable", lambda _path: revived.is_set()
+    )
+    monkeypatch.setattr(
+        session_client, "session_process_is_verified", lambda _id: False
+    )
+    result_holder = []
+
+    with session_client.session_restart_lock("race"):
+        thread = threading.Thread(
+            target=lambda: result_holder.append(
+                runner.invoke(app, ["session-cleanup", "--session", "race", "--json"])
+            )
+        )
+        thread.start()
+        time.sleep(0.05)
+        revived.set()
+
+    thread.join(timeout=2)
+
+    assert not thread.is_alive()
+    result = result_holder[0]
+    assert result.exit_code == 0
+    payload = json.loads(result.output)
+    assert payload["result"]["cleaned"] == []
+    assert payload["result"]["skipped"] == [
+        {"reason": "live_session", "session_id": "race"}
+    ]
+    assert paths.root.exists()
