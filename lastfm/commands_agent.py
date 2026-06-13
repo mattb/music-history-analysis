@@ -15,7 +15,7 @@ from .agent_output import error_envelope, print_json, success_envelope
 from .session_client import (
     dispatch_to_session,
     list_sessions,
-    read_metadata,
+    read_session_status,
     remove_session_files,
     start_session,
     stop_session,
@@ -24,6 +24,7 @@ from .session_client import (
 
 AGENT_ANALYSIS_HELP_SUFFIX = (
     "Prerequisites: use either --session for a running daemon or --csv for one-shot mode.\n\n"
+    "Expired named sessions restart automatically from persisted metadata.\n\n"
     "Output contract: --json writes a single JSON envelope to stdout; diagnostics go to stderr.\n\n"
     "Failure behavior: non-zero exit with ok=false JSON envelope for runtime failures."
 )
@@ -364,7 +365,9 @@ def register(app: typer.Typer) -> None:
         json_output: bool = typer.Option(True, "--json", help="Emit structured JSON."),
     ):
         try:
-            payload = success_envelope("session-status", read_metadata(session), session_id=session)
+            payload = success_envelope(
+                "session-status", read_session_status(session), session_id=session
+            )
             if json_output:
                 print_json(payload)
             else:

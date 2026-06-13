@@ -11,6 +11,7 @@ import lastfm.session_client as session_client
 from lastfm.cli import app
 from lastfm.session_client import (
     list_sessions,
+    read_session_status,
     remove_session_files,
     session_paths,
     session_process_matches,
@@ -661,7 +662,45 @@ def test_list_sessions_reads_metadata(tmp_path, monkeypatch):
     paths = session_paths("a")
     paths.root.mkdir(parents=True)
     paths.metadata.write_text(json.dumps({"session_id": "a", "pid": 123}))
-    assert list_sessions() == [{"session_id": "a", "pid": 123}]
+    monkeypatch.setattr(session_client, "session_is_live", lambda session_id: True)
+    assert list_sessions() == [{"session_id": "a", "pid": 123, "running": True}]
+
+
+def test_read_session_status_reports_false_liveness_without_starting_session(
+    tmp_path, monkeypatch
+):
+    monkeypatch.setenv("LASTFM_SESSION_ROOT", str(tmp_path))
+    paths = session_paths("sleeping")
+    paths.root.mkdir(parents=True)
+    paths.metadata.write_text(json.dumps({"session_id": "sleeping", "pid": 123}))
+    monkeypatch.setattr(session_client, "session_is_live", lambda session_id: False)
+
+    def forbidden(*_args, **_kwargs):
+        raise AssertionError("status reads must not start or restart sessions")
+
+    monkeypatch.setattr(session_client, "start_session", forbidden)
+    monkeypatch.setattr(session_client, "restart_session", forbidden)
+
+    assert read_session_status("sleeping") == {
+        "session_id": "sleeping",
+        "pid": 123,
+        "running": False,
+    }
+
+
+def test_read_session_status_preserves_missing_and_corrupt_metadata_errors(
+    tmp_path, monkeypatch
+):
+    monkeypatch.setenv("LASTFM_SESSION_ROOT", str(tmp_path))
+
+    with pytest.raises(FileNotFoundError, match="No metadata found"):
+        read_session_status("missing")
+
+    paths = session_paths("bad")
+    paths.root.mkdir(parents=True)
+    paths.metadata.write_text("{")
+    with pytest.raises(json.JSONDecodeError):
+        read_session_status("bad")
 
 
 def test_list_sessions_reports_corrupt_metadata(tmp_path, monkeypatch):
@@ -673,7 +712,34 @@ def test_list_sessions_reports_corrupt_metadata(tmp_path, monkeypatch):
     sessions = list_sessions()
 
     assert sessions[0]["session_id"] == "bad"
+    assert sessions[0]["running"] is False
     assert "metadata_error" in sessions[0]
+
+
+def test_list_sessions_reports_liveness_without_starting_sessions(
+    tmp_path, monkeypatch
+):
+    monkeypatch.setenv("LASTFM_SESSION_ROOT", str(tmp_path))
+    for session_id in ("awake", "sleeping"):
+        paths = session_paths(session_id)
+        paths.root.mkdir(parents=True)
+        paths.metadata.write_text(json.dumps({"session_id": session_id}))
+    monkeypatch.setattr(
+        session_client,
+        "session_is_live",
+        lambda session_id: session_id == "awake",
+    )
+
+    def forbidden(*_args, **_kwargs):
+        raise AssertionError("session listing must not start or restart sessions")
+
+    monkeypatch.setattr(session_client, "start_session", forbidden)
+    monkeypatch.setattr(session_client, "restart_session", forbidden)
+
+    assert list_sessions() == [
+        {"session_id": "awake", "running": True},
+        {"session_id": "sleeping", "running": False},
+    ]
 
 
 def test_remove_session_files_removes_directory(tmp_path, monkeypatch):

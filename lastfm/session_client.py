@@ -286,6 +286,11 @@ def read_metadata(session_id: str) -> dict[str, Any]:
     return json.loads(path.read_text())
 
 
+def read_session_status(session_id: str) -> dict[str, Any]:
+    metadata = read_metadata(session_id)
+    return {**metadata, "running": session_is_live(session_id)}
+
+
 def persisted_session_csv(session_id: str) -> Path:
     try:
         metadata = read_metadata(session_id)
@@ -333,9 +338,15 @@ def list_sessions() -> list[dict[str, Any]]:
     for metadata_path in sorted(root.glob("*/metadata.json")):
         session_id = metadata_path.parent.name
         try:
-            sessions.append(json.loads(metadata_path.read_text()))
+            sessions.append(read_session_status(session_id))
         except (OSError, json.JSONDecodeError) as exc:
-            sessions.append({"session_id": session_id, "metadata_error": str(exc)})
+            sessions.append(
+                {
+                    "session_id": session_id,
+                    "running": False,
+                    "metadata_error": str(exc),
+                }
+            )
     return sessions
 
 

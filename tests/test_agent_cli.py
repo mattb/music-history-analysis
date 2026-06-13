@@ -51,6 +51,74 @@ def test_root_help_mentions_agent_workflow():
     assert "listening-stats" in result.output
 
 
+def test_session_status_reports_persisted_liveness_without_waking_session(
+    tmp_path, monkeypatch
+):
+    import lastfm.session_client as session_client
+
+    monkeypatch.setenv("LASTFM_SESSION_ROOT", str(tmp_path))
+    paths = session_client.session_paths("sleeping")
+    paths.root.mkdir(parents=True)
+    paths.metadata.write_text(json.dumps({"session_id": "sleeping", "pid": 123}))
+    monkeypatch.setattr(session_client, "session_is_live", lambda session_id: False)
+
+    def forbidden(*_args, **_kwargs):
+        raise AssertionError("session-status must not wake a sleeping session")
+
+    monkeypatch.setattr(session_client, "start_session", forbidden)
+    monkeypatch.setattr(session_client, "restart_session", forbidden)
+
+    result = runner.invoke(app, ["session-status", "--session", "sleeping", "--json"])
+
+    assert result.exit_code == 0, result.output
+    assert json.loads(result.output)["result"] == {
+        "pid": 123,
+        "running": False,
+        "session_id": "sleeping",
+    }
+
+
+def test_session_list_reports_true_and_false_liveness_without_waking_sessions(
+    tmp_path, monkeypatch
+):
+    import lastfm.session_client as session_client
+
+    monkeypatch.setenv("LASTFM_SESSION_ROOT", str(tmp_path))
+    for session_id in ("awake", "sleeping"):
+        paths = session_client.session_paths(session_id)
+        paths.root.mkdir(parents=True)
+        paths.metadata.write_text(json.dumps({"session_id": session_id}))
+    monkeypatch.setattr(
+        session_client,
+        "session_is_live",
+        lambda session_id: session_id == "awake",
+    )
+
+    def forbidden(*_args, **_kwargs):
+        raise AssertionError("session-list must not wake sleeping sessions")
+
+    monkeypatch.setattr(session_client, "start_session", forbidden)
+    monkeypatch.setattr(session_client, "restart_session", forbidden)
+
+    result = runner.invoke(app, ["session-list", "--json"])
+
+    assert result.exit_code == 0, result.output
+    assert json.loads(result.output)["result"]["sessions"] == [
+        {"running": True, "session_id": "awake"},
+        {"running": False, "session_id": "sleeping"},
+    ]
+
+
+def test_agent_help_says_expired_named_sessions_restart_automatically():
+    result = runner.invoke(app, ["listening-stats", "--help"])
+
+    assert result.exit_code == 0
+    assert (
+        "Expired named sessions restart automatically from persisted metadata."
+        in result.output
+    )
+
+
 def test_all_agent_commands_are_registered_in_help():
     expected = [
         "taste-evolution",
