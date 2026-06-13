@@ -487,6 +487,33 @@ def test_session_start_help_documents_lifecycle():
     assert "ready" in result.output
 
 
+def test_session_start_invalid_csv_emits_only_structured_json(tmp_path, monkeypatch):
+    monkeypatch.setenv("LASTFM_SESSION_ROOT", str(tmp_path / "sessions"))
+    invalid_csv = tmp_path / "invalid.csv"
+    invalid_csv.write_text("")
+
+    result = runner.invoke(
+        app,
+        [
+            "session-start",
+            "--session-id",
+            "invalid",
+            "--csv",
+            str(invalid_csv),
+            "--json",
+        ],
+    )
+
+    assert result.exit_code == 1
+    payloads = [json.loads(line) for line in result.output.splitlines()]
+    assert any(
+        payload.get("event") == "failed" and payload.get("code") == "CSV_LOAD_FAILED"
+        for payload in payloads
+    )
+    assert payloads[-1]["ok"] is False
+    assert "Traceback" not in result.output
+
+
 @pytest.mark.parametrize(
     ("command", "options"),
     [

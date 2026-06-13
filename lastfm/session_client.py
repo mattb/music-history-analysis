@@ -39,6 +39,16 @@ class RemoteAgentError(RuntimeError):
         self.retryable = retryable
 
 
+class SessionStartupError(RuntimeError):
+    """A structured failure reported while a session daemon starts."""
+
+    def __init__(self, session_id: str, code: str, message: str):
+        super().__init__(f"Session {session_id} failed to start: {message}")
+        self.session_id = session_id
+        self.code = code
+        self.startup_message = message
+
+
 def session_root() -> Path:
     return Path(
         os.environ.get(
@@ -123,30 +133,32 @@ def session_is_live(session_id: str) -> bool:
 def start_session(
     session_id: str, csv_path: Path, json_output: bool = True
 ) -> subprocess.Popen:
-    paths = session_paths(session_id)
-    paths.root.mkdir(parents=True, exist_ok=True)
-    if socket_is_connectable(paths.socket):
-        raise RuntimeError(f"Session {session_id} is already running")
+    with session_restart_lock(session_id) as paths:
+        paths.root.mkdir(parents=True, exist_ok=True)
+        if socket_is_connectable(paths.socket):
+            raise RuntimeError(f"Session {session_id} is already running")
 
-    if json_output:
-        return _start_session_until_ready(session_id, csv_path, event_stream=sys.stdout)
+        if json_output:
+            return _start_session_until_ready(
+                session_id, csv_path, event_stream=sys.stdout
+            )
 
-    cmd = [
-        sys.executable,
-        "-m",
-        "lastfm.session_daemon",
-        "--session-id",
-        session_id,
-        "--csv",
-        str(csv_path),
-    ]
-    return subprocess.Popen(
-        cmd,
-        stdin=subprocess.DEVNULL,
-        stdout=subprocess.DEVNULL,
-        stderr=subprocess.DEVNULL,
-        start_new_session=True,
-    )
+        cmd = [
+            sys.executable,
+            "-m",
+            "lastfm.session_daemon",
+            "--session-id",
+            session_id,
+            "--csv",
+            str(csv_path),
+        ]
+        return subprocess.Popen(
+            cmd,
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            start_new_session=True,
+        )
 
 
 def _start_session_until_ready(
@@ -217,6 +229,10 @@ def _start_session_until_ready(
                 raise RuntimeError(
                     f"Session {session_id} emitted invalid startup JSON"
                 ) from exc
+            if event.get("event") == "failed":
+                code = event.get("code", "SESSION_START_FAILED")
+                message = event.get("message", "Session daemon failed to start")
+                raise SessionStartupError(session_id, str(code), str(message))
             if event.get("event") == "ready":
                 ready = True
                 break

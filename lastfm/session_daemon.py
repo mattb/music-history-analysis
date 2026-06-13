@@ -14,7 +14,12 @@ from pathlib import Path
 from . import agent_tools
 from .agent_output import emit_event, error_envelope, success_envelope
 from .analysis_state import AnalysisState
-from .session_client import SessionPaths, session_paths, socket_is_connectable
+from .session_client import (
+    SessionPaths,
+    session_paths,
+    session_restart_lock,
+    socket_is_connectable,
+)
 
 
 DEFAULT_IDLE_TIMEOUT_SECONDS = 30 * 60
@@ -129,12 +134,26 @@ def remove_owned_runtime_files(paths: SessionPaths, pid: int) -> None:
         pass
 
 
+def cleanup_owned_runtime_files(
+    session_id: str,
+    paths: SessionPaths,
+    pid: int,
+    server: UnixAgentServer | None = None,
+) -> None:
+    """Serialize daemon cleanup with restart and explicit session cleanup."""
+    with session_restart_lock(session_id):
+        remove_owned_runtime_files(paths, pid)
+        if server is not None:
+            server.server_close()
+
+
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--session-id", required=True)
     parser.add_argument("--csv", required=True)
     parser.add_argument("--json", action="store_true")
     args = parser.parse_args()
+    csv_path = Path(args.csv).resolve()
 
     paths = session_paths(args.session_id)
     paths.root.mkdir(parents=True, exist_ok=True)
@@ -154,13 +173,24 @@ def main() -> None:
 
     if args.json:
         emit_event("start", session_id=args.session_id)
-        emit_event(
-            "load_csv", session_id=args.session_id, path=str(Path(args.csv).resolve())
-        )
+        emit_event("load_csv", session_id=args.session_id, path=str(csv_path))
 
     state = AnalysisState()
-    with redirect_stdout(sys.stderr):
-        state.load(Path(args.csv))
+    try:
+        with redirect_stdout(sys.stderr):
+            state.load(csv_path)
+    except Exception as exc:
+        message = f"Failed to load CSV: {exc}"
+        if args.json:
+            emit_event(
+                "failed",
+                session_id=args.session_id,
+                code="CSV_LOAD_FAILED",
+                message=message,
+            )
+        else:
+            print(message, file=sys.stderr)
+        raise SystemExit(1) from None
 
     paths.pid.write_text(str(os.getpid()))
     metadata = {
@@ -171,9 +201,23 @@ def main() -> None:
     }
     paths.metadata.write_text(json.dumps(metadata, indent=2, sort_keys=True))
 
-    server = UnixAgentServer(
-        str(paths.socket), AgentRequestHandler, state, args.session_id
-    )
+    try:
+        server = UnixAgentServer(
+            str(paths.socket), AgentRequestHandler, state, args.session_id
+        )
+    except Exception as exc:
+        cleanup_owned_runtime_files(args.session_id, paths, os.getpid())
+        message = f"Failed to start session server: {exc}"
+        if args.json:
+            emit_event(
+                "failed",
+                session_id=args.session_id,
+                code="DAEMON_START_FAILED",
+                message=message,
+            )
+        else:
+            print(message, file=sys.stderr)
+        raise SystemExit(1) from None
 
     def shutdown(_signum, _frame) -> None:
         threading.Thread(target=server.shutdown, daemon=True).start()
@@ -188,8 +232,7 @@ def main() -> None:
         server.start_idle_watchdog()
         server.serve_forever()
     finally:
-        remove_owned_runtime_files(paths, os.getpid())
-        server.server_close()
+        cleanup_owned_runtime_files(args.session_id, paths, os.getpid(), server)
 
 
 if __name__ == "__main__":

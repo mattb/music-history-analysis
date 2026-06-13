@@ -360,6 +360,132 @@ def test_main_removes_runtime_paths_before_closing_server(tmp_path, monkeypatch)
     assert events == ["cleanup", "close"]
 
 
+def test_main_emits_structured_server_start_failure_and_cleans_pid(
+    tmp_path, monkeypatch, capsys
+):
+    paths = SessionPaths(
+        root=tmp_path,
+        socket=tmp_path / "lastfm.sock",
+        pid=tmp_path / "pid",
+        metadata=tmp_path / "metadata.json",
+        restart_lock=tmp_path.parent / ".locks" / "test-session.lock",
+    )
+
+    class FakeState:
+        def load(self, _path):
+            pass
+
+        def metadata(self):
+            return {"csv_path": "/absolute/input.csv"}
+
+    monkeypatch.setattr(
+        "sys.argv",
+        [
+            "session-daemon",
+            "--session-id",
+            "test",
+            "--csv",
+            "input.csv",
+            "--json",
+        ],
+    )
+    monkeypatch.setattr(session_daemon, "session_paths", lambda _session_id: paths)
+    monkeypatch.setattr(session_daemon, "socket_is_connectable", lambda _path: False)
+    monkeypatch.setattr(session_daemon, "AnalysisState", FakeState)
+    monkeypatch.setattr(
+        session_daemon,
+        "UnixAgentServer",
+        lambda *_args: (_ for _ in ()).throw(OSError("cannot bind")),
+    )
+
+    with pytest.raises(SystemExit) as exc_info:
+        session_daemon.main()
+
+    assert exc_info.value.code == 1
+    events = [json.loads(line) for line in capsys.readouterr().out.splitlines()]
+    assert events[-1] == {
+        "code": "DAEMON_START_FAILED",
+        "event": "failed",
+        "message": "Failed to start session server: cannot bind",
+        "session_id": "test",
+    }
+    assert not paths.pid.exists()
+
+
+def test_cleanup_waits_for_restart_and_preserves_successor_runtime(
+    tmp_path, monkeypatch
+):
+    monkeypatch.setenv("LASTFM_SESSION_ROOT", str(tmp_path))
+    paths = session_daemon.session_paths("race")
+    paths.root.mkdir(parents=True)
+    paths.pid.write_text("111")
+    paths.socket.write_text("old")
+    successor_written = threading.Event()
+    cleanup_finished = threading.Event()
+
+    with session_daemon.session_restart_lock("race"):
+        cleanup = threading.Thread(
+            target=lambda: (
+                session_daemon.cleanup_owned_runtime_files("race", paths, 111),
+                cleanup_finished.set(),
+            )
+        )
+        cleanup.start()
+        paths.pid.write_text("222")
+        paths.socket.write_text("successor")
+        successor_written.set()
+        assert not cleanup_finished.wait(timeout=0.05)
+
+    cleanup.join(timeout=2)
+
+    assert successor_written.is_set()
+    assert cleanup_finished.is_set()
+    assert paths.pid.read_text() == "222"
+    assert paths.socket.read_text() == "successor"
+
+
+def test_restart_waits_for_cleanup_then_writes_successor_runtime(tmp_path, monkeypatch):
+    monkeypatch.setenv("LASTFM_SESSION_ROOT", str(tmp_path))
+    paths = session_daemon.session_paths("race")
+    paths.root.mkdir(parents=True)
+    paths.pid.write_text("111")
+    paths.socket.write_text("old")
+    cleanup_holds_lock = threading.Event()
+    allow_cleanup = threading.Event()
+    restart_finished = threading.Event()
+    real_remove = session_daemon.remove_owned_runtime_files
+
+    def paused_remove(cleanup_paths, pid):
+        cleanup_holds_lock.set()
+        assert allow_cleanup.wait(timeout=2)
+        real_remove(cleanup_paths, pid)
+
+    monkeypatch.setattr(session_daemon, "remove_owned_runtime_files", paused_remove)
+    cleanup = threading.Thread(
+        target=session_daemon.cleanup_owned_runtime_files,
+        args=("race", paths, 111),
+    )
+    cleanup.start()
+    assert cleanup_holds_lock.wait(timeout=2)
+
+    def restart():
+        with session_daemon.session_restart_lock("race"):
+            paths.pid.write_text("222")
+            paths.socket.write_text("successor")
+        restart_finished.set()
+
+    successor = threading.Thread(target=restart)
+    successor.start()
+    assert not restart_finished.wait(timeout=0.05)
+    allow_cleanup.set()
+    cleanup.join(timeout=2)
+    successor.join(timeout=2)
+
+    assert restart_finished.is_set()
+    assert paths.pid.read_text() == "222"
+    assert paths.socket.read_text() == "successor"
+
+
 def test_remove_owned_runtime_files_unlinks_pid_before_socket():
     events = []
 

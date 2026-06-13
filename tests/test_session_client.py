@@ -1,4 +1,5 @@
 import errno
+import io
 import json
 import socket
 import threading
@@ -290,6 +291,84 @@ def test_concurrent_restarts_spawn_one_daemon(tmp_path, monkeypatch):
     assert errors == []
     assert all(not thread.is_alive() for thread in threads)
     assert len(starts) == 1
+
+
+def test_relative_csv_is_persisted_absolute_and_stopped_session_restarts(
+    tmp_path, monkeypatch
+):
+    import lastfm.session_daemon as session_daemon
+
+    session_root = tmp_path / "sessions"
+    source_dir = tmp_path / "source"
+    source_dir.mkdir()
+    csv_path = source_dir / "history.csv"
+    csv_path.write_text("uts,artist\n")
+    monkeypatch.setenv("LASTFM_SESSION_ROOT", str(session_root))
+    monkeypatch.chdir(source_dir)
+    loaded_paths = []
+
+    class FakeState:
+        def load(self, path):
+            loaded_paths.append(path)
+
+        def metadata(self):
+            return {"csv_path": str(loaded_paths[-1])}
+
+    class FakeServer:
+        def __init__(self, socket_path, *_args):
+            Path(socket_path).touch()
+
+        def start_idle_watchdog(self):
+            pass
+
+        def serve_forever(self):
+            pass
+
+        def server_close(self):
+            pass
+
+        def shutdown(self):
+            pass
+
+    monkeypatch.setattr(
+        "sys.argv",
+        ["session-daemon", "--session-id", "relative", "--csv", "history.csv"],
+    )
+    monkeypatch.setattr(session_daemon, "AnalysisState", FakeState)
+    monkeypatch.setattr(session_daemon, "UnixAgentServer", FakeServer)
+    monkeypatch.setattr(session_daemon.signal, "signal", lambda *_args: None)
+
+    session_daemon.main()
+
+    paths = session_paths("relative")
+    metadata = json.loads(paths.metadata.read_text())
+    assert loaded_paths == [csv_path.resolve()]
+    assert metadata["csv_path"] == str(csv_path.resolve())
+    assert Path(metadata["csv_path"]).is_absolute()
+    assert not paths.pid.exists()
+    assert not paths.socket.exists()
+
+    attempts = []
+    starts = []
+
+    def dispatch(*_args):
+        attempts.append(None)
+        if len(attempts) == 1:
+            raise FileNotFoundError("stopped")
+        return {"plays": 1}
+
+    monkeypatch.setattr(session_client, "_dispatch_once", dispatch)
+    monkeypatch.setattr(session_client, "socket_is_connectable", lambda _path: False)
+    monkeypatch.setattr(
+        session_client,
+        "_start_session_until_ready",
+        lambda session_id, source, event_stream=None: starts.append(
+            (session_id, source, event_stream)
+        ),
+    )
+
+    assert session_client.dispatch_to_session("relative", "stats", {}) == {"plays": 1}
+    assert starts == [("relative", csv_path.resolve(), None)]
 
 
 def test_start_session_json_forwards_startup_events_until_ready(
@@ -716,6 +795,36 @@ def test_start_session_until_ready_reaps_process_on_malformed_output(
     assert "close" in calls
 
 
+def test_real_daemon_csv_load_failure_is_structured_and_reaped(tmp_path, monkeypatch):
+    monkeypatch.setenv("LASTFM_SESSION_ROOT", str(tmp_path / "sessions"))
+    invalid_csv = tmp_path / "invalid.csv"
+    invalid_csv.write_text("")
+    real_popen = session_client.subprocess.Popen
+    children = []
+
+    def capture_child(*args, **kwargs):
+        child = real_popen(*args, **kwargs)
+        children.append(child)
+        return child
+
+    monkeypatch.setattr(session_client.subprocess, "Popen", capture_child)
+    events = io.StringIO()
+
+    with pytest.raises(session_client.SessionStartupError) as exc_info:
+        session_client._start_session_until_ready(
+            "invalid", invalid_csv, event_stream=events, startup_timeout_seconds=10
+        )
+
+    assert exc_info.value.code == "CSV_LOAD_FAILED"
+    assert str(exc_info.value).startswith("Session invalid failed to start: ")
+    lifecycle = [json.loads(line) for line in events.getvalue().splitlines()]
+    assert lifecycle[-1]["event"] == "failed"
+    assert lifecycle[-1]["code"] == "CSV_LOAD_FAILED"
+    assert lifecycle[-1]["message"]
+    assert len(children) == 1
+    assert children[0].poll() is not None
+
+
 def test_start_session_refuses_existing_reachable_session(tmp_path, monkeypatch):
     monkeypatch.setenv("LASTFM_SESSION_ROOT", str(tmp_path))
     monkeypatch.setattr(session_client, "socket_is_connectable", lambda _path: True)
@@ -733,6 +842,37 @@ def test_start_session_refuses_existing_reachable_session(tmp_path, monkeypatch)
         assert str(exc) == "Session music-2025 is already running"
     else:
         raise AssertionError("expected duplicate session failure")
+
+
+def test_explicit_start_waits_for_session_lifecycle_lock(tmp_path, monkeypatch):
+    monkeypatch.setenv("LASTFM_SESSION_ROOT", str(tmp_path))
+    started = threading.Event()
+    finished = threading.Event()
+    monkeypatch.setattr(session_client, "socket_is_connectable", lambda _path: False)
+    monkeypatch.setattr(
+        session_client,
+        "_start_session_until_ready",
+        lambda *_args, **_kwargs: started.set(),
+    )
+
+    with session_client.session_restart_lock("music-2025"):
+        thread = threading.Thread(
+            target=lambda: (
+                start_session(
+                    "music-2025",
+                    tmp_path / "recenttracks-test.csv",
+                    json_output=True,
+                ),
+                finished.set(),
+            )
+        )
+        thread.start()
+        assert not started.wait(timeout=0.05)
+
+    thread.join(timeout=2)
+
+    assert started.is_set()
+    assert finished.is_set()
 
 
 def test_session_process_matches_requires_daemon_session_id():
