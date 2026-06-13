@@ -18,7 +18,7 @@ COMPARISON_PERIODS = ("pre", "event", "post", "baseline")
 
 @dataclass(frozen=True)
 class EventWindowSpec:
-    event_date: date | str
+    event_date: date
     timezone: str = "UTC"
     pre_days: int = 28
     event_days: int = 1
@@ -28,18 +28,8 @@ class EventWindowSpec:
     top_n: int = 50
 
     def __post_init__(self) -> None:
-        if type(self.event_date) is date:
-            parsed = self.event_date
-        elif isinstance(self.event_date, str):
-            try:
-                parsed = date.fromisoformat(self.event_date)
-            except ValueError as exc:
-                raise ValueError("event_date must be an ISO date (YYYY-MM-DD)") from exc
-            if parsed.isoformat() != self.event_date:
-                raise ValueError("event_date must be an ISO date (YYYY-MM-DD)")
-        else:
-            raise ValueError("event_date must be an ISO date (YYYY-MM-DD)")
-        object.__setattr__(self, "event_date", parsed)
+        if type(self.event_date) is not date:
+            raise ValueError("event_date must be a datetime.date")
         try:
             ZoneInfo(self.timezone)
         except (ZoneInfoNotFoundError, TypeError) as exc:
@@ -104,7 +94,7 @@ def _round(value: float) -> float:
 
 
 def _clean(value: Any) -> str:
-    return "" if pd.isna(value) else str(value)
+    return "" if pd.isna(value) else str(value).strip()
 
 
 def _entity_key(row: Any, entity: str) -> tuple[str, ...] | None:
@@ -139,7 +129,7 @@ def _unique_pairs(frame: pd.DataFrame, column: str) -> int:
     pairs = {
         (_clean(row.artist), _clean(getattr(row, column)))
         for row in frame.itertuples(index=False)
-        if _clean(getattr(row, column))
+        if _clean(row.artist) and _clean(getattr(row, column))
     }
     return len(pairs)
 

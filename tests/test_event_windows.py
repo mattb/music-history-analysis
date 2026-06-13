@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import json
 import math
-from datetime import date
+from datetime import date, datetime
 
 import pandas as pd
 import pytest
@@ -31,15 +31,17 @@ def plays(*rows: tuple[str, str, str, str]) -> pd.DataFrame:
 
 def test_spec_rejects_invalid_date_timezone_entity_and_counts():
     for kwargs in (
+        {"event_date": "2024-02-01"},
         {"event_date": "2024-02-30"},
         {"event_date": "02/01/2024"},
-        {"event_date": "2024-02-01", "timezone": "Mars/Olympus"},
-        {"event_date": "2024-02-01", "entity": "genre"},
-        {"event_date": "2024-02-01", "pre_days": True},
-        {"event_date": "2024-02-01", "event_days": 0},
-        {"event_date": "2024-02-01", "post_days": 1.5},
-        {"event_date": "2024-02-01", "baseline_days": math.nan},
-        {"event_date": "2024-02-01", "top_n": -1},
+        {"event_date": datetime(2024, 2, 1)},
+        {"event_date": date(2024, 2, 1), "timezone": "Mars/Olympus"},
+        {"event_date": date(2024, 2, 1), "entity": "genre"},
+        {"event_date": date(2024, 2, 1), "pre_days": True},
+        {"event_date": date(2024, 2, 1), "event_days": 0},
+        {"event_date": date(2024, 2, 1), "post_days": 1.5},
+        {"event_date": date(2024, 2, 1), "baseline_days": math.nan},
+        {"event_date": date(2024, 2, 1), "top_n": -1},
     ):
         with pytest.raises(ValueError):
             EventWindowSpec(**kwargs)
@@ -77,7 +79,7 @@ def test_intervals_are_half_open_local_calendar_days_and_dst_aware():
     result = analyze_event_window(
         df,
         EventWindowSpec(
-            "2024-03-10",
+            date(2024, 3, 10),
             timezone="America/Los_Angeles",
             pre_days=1,
             event_days=1,
@@ -104,7 +106,11 @@ def test_coverage_clips_both_sides_and_rates_use_covered_days():
     result = analyze_event_window(
         df,
         EventWindowSpec(
-            "2024-01-05", pre_days=4, event_days=1, post_days=4, baseline_days=3
+            date(2024, 1, 5),
+            pre_days=4,
+            event_days=1,
+            post_days=4,
+            baseline_days=3,
         ),
     )
     assert result["periods"]["pre"]["requested_days"] == 4
@@ -122,7 +128,7 @@ def test_coverage_clips_both_sides_and_rates_use_covered_days():
 def test_zero_covered_event_interval_is_an_error():
     df = plays(("2024-01-01T12:00:00Z", "A", "One", "x"))
     with pytest.raises(ValueError, match="event interval.*source coverage"):
-        analyze_event_window(df, EventWindowSpec("2024-02-01"))
+        analyze_event_window(df, EventWindowSpec(date(2024, 2, 1)))
 
 
 @pytest.mark.parametrize(
@@ -146,7 +152,7 @@ def test_entity_groupings_and_blank_album_track_exclusion(
     result = analyze_event_window(
         df,
         EventWindowSpec(
-            "2024-01-03",
+            date(2024, 1, 3),
             pre_days=1,
             event_days=1,
             post_days=1,
@@ -178,7 +184,11 @@ def test_baseline_excludes_analysis_windows_and_expected_residuals_are_hand_chec
     result = analyze_event_window(
         df,
         EventWindowSpec(
-            "2024-01-05", pre_days=1, event_days=1, post_days=1, baseline_days=3
+            date(2024, 1, 5),
+            pre_days=1,
+            event_days=1,
+            post_days=1,
+            baseline_days=3,
         ),
     )
     row = next(row for row in result["entities"] if row["key"] == ["A"])
@@ -209,7 +219,11 @@ def test_residual_is_null_when_baseline_expected_is_zero_and_first_play_is_exact
     result = analyze_event_window(
         df,
         EventWindowSpec(
-            "2024-01-02", pre_days=1, event_days=1, post_days=1, baseline_days=1
+            date(2024, 1, 2),
+            pre_days=1,
+            event_days=1,
+            post_days=1,
+            baseline_days=1,
         ),
     )
     row = next(row for row in result["entities"] if row["key"] == ["new"])
@@ -227,7 +241,12 @@ def test_top_n_is_union_with_stable_delta_tie_breaking_and_json_has_no_nan():
         ("2024-01-05T12:00:00Z", "tail", "T", "t"),
     )
     spec = EventWindowSpec(
-        "2024-01-03", pre_days=1, event_days=1, post_days=1, baseline_days=1, top_n=1
+        date(2024, 1, 3),
+        pre_days=1,
+        event_days=1,
+        post_days=1,
+        baseline_days=1,
+        top_n=1,
     )
     first = analyze_event_window(df, spec)
     second = analyze_event_window(df.sample(frac=1, random_state=7), spec)
@@ -276,6 +295,40 @@ def test_compare_contract_excludes_missing_artists_and_rejects_missing_timestamp
                 baseline_days=1,
             ),
         )
+
+
+@pytest.mark.parametrize("entity", ["artist", "album", "track"])
+def test_entity_keys_strip_strings_and_exclude_blank_or_missing_artists(entity):
+    df = plays(
+        ("2024-01-01T12:00:00Z", "base", "Base", "base"),
+        ("2024-01-02T10:00:00Z", "  A  ", "  One  ", "  x  "),
+        ("2024-01-02T11:00:00Z", "   ", "Ghost", "ghost"),
+        ("2024-01-02T12:00:00Z", "A", "   ", "   "),
+        ("2024-01-03T12:00:00Z", "tail", "Tail", "tail"),
+    )
+    df.loc[len(df)] = [pd.Timestamp("2024-01-02T13:00:00Z"), None, "Ghost", "ghost"]
+    df.loc[len(df)] = [pd.Timestamp("2024-01-02T14:00:00Z"), "A", None, None]
+    result = compare_event_window(
+        df,
+        EventWindowSpec(
+            date(2024, 1, 2),
+            pre_days=1,
+            event_days=1,
+            post_days=1,
+            baseline_days=1,
+            entity=entity,
+        ),
+    )
+    expected = {
+        "artist": [["A"]],
+        "album": [["A", "One"]],
+        "track": [["A", "x"]],
+    }[entity]
+    event_counts = result["periods"]["event"]["entity_counts"]
+    assert [row["key"] for row in event_counts] == expected
+    assert result["periods"]["event"]["unique_artists"] == 1
+    assert result["periods"]["event"]["unique_albums"] == 1
+    assert result["periods"]["event"]["unique_tracks"] == 1
 
 
 def test_schema_rounds_floats_to_ten_decimal_places():

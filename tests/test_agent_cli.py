@@ -1,4 +1,7 @@
 import json
+import shutil
+import tempfile
+import threading
 
 import pytest
 
@@ -157,6 +160,63 @@ def test_life_event_window_session_forwards_all_parameters(monkeypatch):
     assert captured["params"]["timezone"] == "Europe/London"
     assert captured["params"]["entity"] == "album"
     assert captured["params"]["top_n"] == 7
+
+
+def test_life_event_window_real_session_socket_matches_one_shot(
+    monkeypatch, sample_csv
+):
+    from lastfm.analysis_state import AnalysisState
+    from lastfm.data import load_scrobbles
+    from lastfm.session_client import session_paths
+    from lastfm.session_daemon import AgentRequestHandler, UnixAgentServer
+
+    session_root = tempfile.mkdtemp(prefix="lastfm-event-", dir="/tmp")
+    monkeypatch.setenv("LASTFM_SESSION_ROOT", session_root)
+    paths = session_paths("event-parity")
+    paths.root.mkdir(parents=True)
+    state = AnalysisState()
+    state.csv_path = sample_csv
+    state.df = load_scrobbles(sample_csv)
+    server = UnixAgentServer(
+        str(paths.socket), AgentRequestHandler, state, "event-parity"
+    )
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    options = [
+        "--event-date",
+        "2024-01-02",
+        "--timezone",
+        "UTC",
+        "--pre-days",
+        "1",
+        "--event-days",
+        "1",
+        "--post-days",
+        "1",
+        "--baseline-days",
+        "1",
+        "--entity",
+        "artist",
+        "--top-n",
+        "10",
+        "--json",
+    ]
+    try:
+        one_shot = runner.invoke(
+            app, ["life-event-window", "--csv", str(sample_csv), *options]
+        )
+        session = runner.invoke(
+            app, ["life-event-window", "--session", "event-parity", *options]
+        )
+    finally:
+        server.shutdown()
+        server.server_close()
+        thread.join(timeout=2)
+        shutil.rmtree(session_root)
+
+    assert one_shot.exit_code == 0, one_shot.output
+    assert session.exit_code == 0, session.output
+    assert json.loads(session.output)["result"] == json.loads(one_shot.output)["result"]
 
 
 def test_listening_stats_help_documents_output_contract():

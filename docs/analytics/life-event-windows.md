@@ -1,6 +1,6 @@
 # Life-Event Window Analytics
 
-`life-event-window` measures listening around a date supplied by the user. It compares the periods immediately before, during, and after that date with a surrounding baseline. The command reports measurements only; it does not infer what the event meant or whether it caused a change.
+`life-event-window` measures listening around a date supplied by the user. It compares the periods immediately before, during, and after that date with a surrounding baseline. The command parses its required ISO `YYYY-MM-DD` option before constructing the pure Python `EventWindowSpec`, whose `event_date` is strictly a `datetime.date` rather than a string or `datetime`. The command reports measurements only; it does not infer what the event meant or whether it caused a change.
 
 ## Intervals and time
 
@@ -38,7 +38,7 @@ The `entity` parameter selects exact grouping keys:
 - `album`: `[artist, album]`
 - `track`: `[artist, track]`
 
-Blank album and track values are excluded from those entity tables. No fuzzy matching or alias merging occurs. Each period reports plays, plays per covered day, unique artist/album/track counts, and ranked entity counts and shares. An entity share is its count divided by all plays in that period.
+Entity strings are stripped. Blank or missing artists are always excluded; album and track groupings also require a nonblank album or track. Unique album and track counts apply the same rules. No fuzzy matching or alias merging occurs. Each period reports plays, plays per covered day, unique artist/album/track counts, and ranked entity counts and shares. An entity share is its count divided by all plays in that period.
 
 For entity `i` and period `w`, let `O_i,w` be its observed count, `B_i` its count in the combined baseline, `D_B` the baseline's covered days, and `D_w` the period's covered days. The baseline expectation and standardized residual are:
 

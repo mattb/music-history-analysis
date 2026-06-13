@@ -149,8 +149,14 @@ def get_life_event_window(
     top_n: int = 50,
 ) -> dict[str, Any]:
     """Return event-window measurements without editorial interpretation."""
+    try:
+        parsed_event_date = date.fromisoformat(event_date)
+    except (TypeError, ValueError) as exc:
+        raise ValueError("event_date must use YYYY-MM-DD format") from exc
+    if parsed_event_date.isoformat() != event_date:
+        raise ValueError("event_date must use YYYY-MM-DD format")
     spec = event_windows.EventWindowSpec(
-        event_date=date.fromisoformat(event_date),
+        event_date=parsed_event_date,
         timezone=timezone,
         pre_days=pre_days,
         event_days=event_days,

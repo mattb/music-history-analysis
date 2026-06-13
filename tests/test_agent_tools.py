@@ -1,3 +1,5 @@
+import pytest
+
 from lastfm.agent_tools import (
     dispatch,
     get_life_event_window,
@@ -117,3 +119,9 @@ def test_life_event_window_wrapper_and_dispatch(monkeypatch, sample_csv):
         )["schema_version"]
         == 1
     )
+
+
+def test_life_event_window_wrapper_requires_canonical_iso_date(monkeypatch, sample_csv):
+    state = loaded_lightweight_state(monkeypatch, sample_csv)
+    with pytest.raises(ValueError, match="YYYY-MM-DD"):
+        get_life_event_window(state, event_date="20240102")
