@@ -1,10 +1,14 @@
 import json
+import socket
+import threading
+import time
 from pathlib import Path
+
+import pytest
 
 import lastfm.session_client as session_client
 from lastfm.cli import app
 from lastfm.session_client import (
-    SessionPaths,
     list_sessions,
     remove_session_files,
     session_paths,
@@ -25,19 +29,203 @@ def test_session_paths_are_isolated_by_id(tmp_path, monkeypatch):
     assert paths.socket == tmp_path / "music-2025" / "lastfm.sock"
     assert paths.pid == tmp_path / "music-2025" / "pid"
     assert paths.metadata == tmp_path / "music-2025" / "metadata.json"
+    assert paths.restart_lock == tmp_path / "music-2025" / "restart.lock"
 
 
-def test_start_session_json_forwards_startup_events_until_ready(tmp_path, monkeypatch, capsys):
+def write_session_metadata(tmp_path: Path, session_id: str, csv_path: object) -> None:
+    paths = session_paths(session_id)
+    paths.root.mkdir(parents=True)
+    paths.metadata.write_text(json.dumps({"csv_path": csv_path}))
+
+
+def test_dispatch_restarts_missing_socket_from_metadata_once(
+    tmp_path, monkeypatch, capsys
+):
+    monkeypatch.setenv("LASTFM_SESSION_ROOT", str(tmp_path))
+    csv_path = tmp_path / "recenttracks-test.csv"
+    csv_path.write_text("uts,artist\n")
+    write_session_metadata(tmp_path, "music-2025", str(csv_path))
+    attempts = []
+    starts = []
+
+    def fake_dispatch(_session_id, _command, _params):
+        attempts.append(None)
+        if len(attempts) == 1:
+            raise FileNotFoundError("missing socket")
+        return {"plays": 42}
+
+    monkeypatch.setattr(session_client, "_dispatch_once", fake_dispatch)
+    monkeypatch.setattr(session_client, "socket_is_connectable", lambda _path: False)
+    monkeypatch.setattr(
+        session_client,
+        "_start_session_until_ready",
+        lambda session_id, source, event_stream=None: starts.append(
+            (session_id, source, event_stream)
+        ),
+    )
+
+    result = session_client.dispatch_to_session("music-2025", "listening_stats", {})
+
+    assert result == {"plays": 42}
+    assert len(attempts) == 2
+    assert starts == [("music-2025", csv_path, None)]
+    assert capsys.readouterr().out == ""
+
+
+def test_dispatch_does_not_restart_remote_error(monkeypatch):
+    error = session_client.RemoteAgentError("BAD_COMMAND", "bad command", False)
+    monkeypatch.setattr(
+        session_client,
+        "_dispatch_once",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(error),
+    )
+    monkeypatch.setattr(
+        session_client,
+        "restart_session",
+        lambda _session_id: pytest.fail("remote errors must not restart"),
+    )
+
+    with pytest.raises(session_client.RemoteAgentError) as exc_info:
+        session_client.dispatch_to_session("music-2025", "bad", {})
+
+    assert exc_info.value is error
+
+
+def test_dispatch_restarts_only_once_on_repeated_transport_failure(monkeypatch):
+    attempts = []
+    restarts = []
+
+    def fail_dispatch(*_args, **_kwargs):
+        attempts.append(None)
+        raise ConnectionResetError("reset")
+
+    monkeypatch.setattr(session_client, "_dispatch_once", fail_dispatch)
+    monkeypatch.setattr(session_client, "restart_session", restarts.append)
+
+    with pytest.raises(ConnectionResetError, match="reset"):
+        session_client.dispatch_to_session("music-2025", "stats", {})
+
+    assert len(attempts) == 2
+    assert restarts == ["music-2025"]
+
+
+@pytest.mark.parametrize(
+    ("metadata", "error_type", "message"),
+    [
+        (None, FileNotFoundError, "No metadata found for session music-2025"),
+        ("{", RuntimeError, "Invalid metadata for session music-2025"),
+        ({}, RuntimeError, "metadata has no valid csv_path"),
+        ({"csv_path": ""}, RuntimeError, "metadata has no valid csv_path"),
+        ({"csv_path": "relative.csv"}, RuntimeError, "csv_path is not absolute"),
+        (
+            {"csv_path": "/does/not/exist.csv"},
+            FileNotFoundError,
+            "source CSV is not a file",
+        ),
+    ],
+)
+def test_restart_rejects_invalid_metadata_without_spawning(
+    tmp_path, monkeypatch, metadata, error_type, message
+):
+    monkeypatch.setenv("LASTFM_SESSION_ROOT", str(tmp_path))
+    paths = session_paths("music-2025")
+    paths.root.mkdir(parents=True)
+    if metadata is not None:
+        paths.metadata.write_text(
+            metadata if isinstance(metadata, str) else json.dumps(metadata)
+        )
+    monkeypatch.setattr(session_client, "socket_is_connectable", lambda _path: False)
+    monkeypatch.setattr(
+        session_client,
+        "_start_session_until_ready",
+        lambda *_args, **_kwargs: pytest.fail("invalid metadata must not spawn"),
+    )
+
+    with pytest.raises(error_type, match=message):
+        session_client.restart_session("music-2025")
+
+
+@pytest.mark.parametrize(
+    "first_error",
+    [
+        ConnectionRefusedError("refused"),
+        socket.timeout("timed out"),
+        json.JSONDecodeError("truncated", "{", 1),
+        UnicodeDecodeError("utf-8", b"\xff", 0, 1, "invalid start byte"),
+    ],
+)
+def test_dispatch_recovers_from_stale_socket_transport_errors(monkeypatch, first_error):
+    responses = iter([first_error, {"ok": True}])
+    restarts = []
+
+    def dispatch(*_args, **_kwargs):
+        response = next(responses)
+        if isinstance(response, BaseException):
+            raise response
+        return response
+
+    monkeypatch.setattr(session_client, "_dispatch_once", dispatch)
+    monkeypatch.setattr(session_client, "restart_session", restarts.append)
+
+    assert session_client.dispatch_to_session("music-2025", "stats", {}) == {"ok": True}
+    assert restarts == ["music-2025"]
+
+
+def test_concurrent_restarts_spawn_one_daemon(tmp_path, monkeypatch):
+    monkeypatch.setenv("LASTFM_SESSION_ROOT", str(tmp_path))
+    csv_path = tmp_path / "recenttracks-test.csv"
+    csv_path.write_text("uts,artist\n")
+    write_session_metadata(tmp_path, "music-2025", str(csv_path))
+    spawned = threading.Event()
+    starts = []
+
+    def connectable(_path):
+        return spawned.is_set()
+
+    def start(*args, **kwargs):
+        starts.append((args, kwargs))
+        time.sleep(0.1)
+        spawned.set()
+
+    monkeypatch.setattr(session_client, "socket_is_connectable", connectable)
+    monkeypatch.setattr(session_client, "_start_session_until_ready", start)
+    barrier = threading.Barrier(3)
+    errors = []
+
+    def restart():
+        barrier.wait()
+        try:
+            session_client.restart_session("music-2025")
+        except BaseException as exc:
+            errors.append(exc)
+
+    threads = [threading.Thread(target=restart) for _ in range(2)]
+    for thread in threads:
+        thread.start()
+    barrier.wait()
+    for thread in threads:
+        thread.join(timeout=2)
+
+    assert errors == []
+    assert all(not thread.is_alive() for thread in threads)
+    assert len(starts) == 1
+
+
+def test_start_session_json_forwards_startup_events_until_ready(
+    tmp_path, monkeypatch, capsys
+):
     monkeypatch.setenv("LASTFM_SESSION_ROOT", str(tmp_path))
     popen_kwargs = {}
 
     class FakeStdout:
         def __init__(self):
-            self.lines = iter([
-                '{"event":"start","session_id":"music-2025"}\n',
-                '{"event":"ready","session_id":"music-2025"}\n',
-                '{"event":"late","session_id":"music-2025"}\n',
-            ])
+            self.lines = iter(
+                [
+                    '{"event":"start","session_id":"music-2025"}\n',
+                    '{"event":"ready","session_id":"music-2025"}\n',
+                    '{"event":"late","session_id":"music-2025"}\n',
+                ]
+            )
             self.closed = False
 
         def readline(self):
@@ -63,7 +251,9 @@ def test_start_session_json_forwards_startup_events_until_ready(tmp_path, monkey
 
     monkeypatch.setattr(session_client.subprocess, "Popen", fake_popen)
 
-    process = start_session("music-2025", tmp_path / "recenttracks-test.csv", json_output=True)
+    process = start_session(
+        "music-2025", tmp_path / "recenttracks-test.csv", json_output=True
+    )
 
     assert process is fake_process
     assert capsys.readouterr().out.splitlines() == [
@@ -86,7 +276,9 @@ def test_start_session_refuses_existing_reachable_session(tmp_path, monkeypatch)
     monkeypatch.setattr(session_client.subprocess, "Popen", fail_popen)
 
     try:
-        start_session("music-2025", tmp_path / "recenttracks-test.csv", json_output=True)
+        start_session(
+            "music-2025", tmp_path / "recenttracks-test.csv", json_output=True
+        )
     except RuntimeError as exc:
         assert str(exc) == "Session music-2025 is already running"
     else:
@@ -113,7 +305,9 @@ def test_stop_session_refuses_unverified_pid(tmp_path, monkeypatch):
     paths = session_paths("music-2025")
     paths.root.mkdir(parents=True)
     paths.pid.write_text("12345")
-    monkeypatch.setattr(session_client, "session_process_command", lambda _pid: "/bin/sleep 1000")
+    monkeypatch.setattr(
+        session_client, "session_process_command", lambda _pid: "/bin/sleep 1000"
+    )
 
     def fail_kill(*_args, **_kwargs):
         raise AssertionError("unverified process must not be killed")
@@ -167,7 +361,9 @@ def test_session_cleanup_skips_pid_verified_live_session(tmp_path, monkeypatch):
     monkeypatch.setattr(
         session_client,
         "session_process_command",
-        lambda _pid: "/path/python -m lastfm.session_daemon --session-id live --csv recenttracks.csv",
+        lambda _pid: (
+            "/path/python -m lastfm.session_daemon --session-id live --csv recenttracks.csv"
+        ),
     )
 
     result = runner.invoke(app, ["session-cleanup", "--session", "live", "--json"])
@@ -175,7 +371,9 @@ def test_session_cleanup_skips_pid_verified_live_session(tmp_path, monkeypatch):
     assert result.exit_code == 0
     payload = json.loads(result.output)
     assert payload["result"]["cleaned"] == []
-    assert payload["result"]["skipped"] == [{"reason": "live_session", "session_id": "live"}]
+    assert payload["result"]["skipped"] == [
+        {"reason": "live_session", "session_id": "live"}
+    ]
     assert paths.root.exists()
 
 

@@ -1,16 +1,17 @@
 from __future__ import annotations
 
+import fcntl
 import json
 import os
-import shutil
 import shlex
+import shutil
 import socket
 import subprocess
 import sys
 import time
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import Any, TextIO
 
 
 @dataclass(frozen=True)
@@ -19,6 +20,7 @@ class SessionPaths:
     socket: Path
     pid: Path
     metadata: Path
+    restart_lock: Path
 
 
 class RemoteAgentError(RuntimeError):
@@ -46,6 +48,7 @@ def session_paths(session_id: str) -> SessionPaths:
         socket=root / "lastfm.sock",
         pid=root / "pid",
         metadata=root / "metadata.json",
+        restart_lock=root / "restart.lock",
     )
 
 
@@ -117,6 +120,9 @@ def start_session(
     if socket_is_connectable(paths.socket):
         raise RuntimeError(f"Session {session_id} is already running")
 
+    if json_output:
+        return _start_session_until_ready(session_id, csv_path, event_stream=sys.stdout)
+
     cmd = [
         sys.executable,
         "-m",
@@ -126,18 +132,28 @@ def start_session(
         "--csv",
         str(csv_path),
     ]
-    if json_output:
-        cmd.append("--json")
+    return subprocess.Popen(
+        cmd,
+        stdin=subprocess.DEVNULL,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+        start_new_session=True,
+    )
 
-    if not json_output:
-        return subprocess.Popen(
-            cmd,
-            stdin=subprocess.DEVNULL,
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
-            start_new_session=True,
-        )
 
+def _start_session_until_ready(
+    session_id: str, csv_path: Path, event_stream: TextIO | None = None
+) -> subprocess.Popen:
+    cmd = [
+        sys.executable,
+        "-m",
+        "lastfm.session_daemon",
+        "--session-id",
+        session_id,
+        "--csv",
+        str(csv_path),
+        "--json",
+    ]
     process = subprocess.Popen(
         cmd,
         stdin=subprocess.DEVNULL,
@@ -163,8 +179,9 @@ def start_session(
                     f"Session {session_id} exited before ready with code {returncode}"
                 )
 
-            sys.stdout.write(line)
-            sys.stdout.flush()
+            if event_stream is not None:
+                event_stream.write(line)
+                event_stream.flush()
 
             try:
                 event = json.loads(line)
@@ -198,6 +215,37 @@ def read_metadata(session_id: str) -> dict[str, Any]:
     return json.loads(path.read_text())
 
 
+def persisted_session_csv(session_id: str) -> Path:
+    try:
+        metadata = read_metadata(session_id)
+    except json.JSONDecodeError as exc:
+        raise RuntimeError(f"Invalid metadata for session {session_id}: {exc}") from exc
+
+    csv_value = metadata.get("csv_path") if isinstance(metadata, dict) else None
+    if not isinstance(csv_value, str) or not csv_value:
+        raise RuntimeError(f"Session {session_id} metadata has no valid csv_path")
+
+    csv_path = Path(csv_value)
+    if not csv_path.is_absolute():
+        raise RuntimeError(f"Session {session_id} csv_path is not absolute: {csv_path}")
+    if not csv_path.is_file():
+        raise FileNotFoundError(
+            f"Session {session_id} source CSV is not a file: {csv_path}"
+        )
+    return csv_path
+
+
+def restart_session(session_id: str) -> None:
+    paths = session_paths(session_id)
+    paths.root.mkdir(parents=True, exist_ok=True)
+    with paths.restart_lock.open("a") as lock_file:
+        fcntl.flock(lock_file.fileno(), fcntl.LOCK_EX)
+        if socket_is_connectable(paths.socket):
+            return
+        csv_path = persisted_session_csv(session_id)
+        _start_session_until_ready(session_id, csv_path, event_stream=None)
+
+
 def list_sessions() -> list[dict[str, Any]]:
     root = session_root()
     if not root.exists():
@@ -219,7 +267,7 @@ def remove_session_files(session_id: str) -> None:
         shutil.rmtree(paths.root)
 
 
-def dispatch_to_session(session_id: str, command: str, params: dict[str, Any]) -> Any:
+def _dispatch_once(session_id: str, command: str, params: dict[str, Any]) -> Any:
     paths = session_paths(session_id)
     if not paths.socket.exists():
         raise FileNotFoundError(f"No running session named {session_id}")
@@ -244,3 +292,21 @@ def dispatch_to_session(session_id: str, command: str, params: dict[str, Any]) -
             retryable=bool(error.get("retryable", False)),
         )
     return response["result"]
+
+
+RECOVERABLE_TRANSPORT_ERRORS = (
+    FileNotFoundError,
+    ConnectionRefusedError,
+    ConnectionResetError,
+    socket.timeout,
+    json.JSONDecodeError,
+    UnicodeDecodeError,
+)
+
+
+def dispatch_to_session(session_id: str, command: str, params: dict[str, Any]) -> Any:
+    try:
+        return _dispatch_once(session_id, command, params)
+    except RECOVERABLE_TRANSPORT_ERRORS:
+        restart_session(session_id)
+    return _dispatch_once(session_id, command, params)
