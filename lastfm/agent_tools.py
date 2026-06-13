@@ -8,7 +8,7 @@ from typing import Any, Optional
 
 import pandas as pd
 
-from . import crossref, data, listening_graph, musicbrainz_db
+from . import crossref, data, listening_graph, musicbrainz_db, trajectories
 from .analysis_state import AnalysisState, to_serializable
 
 COMMANDS = {
@@ -38,6 +38,8 @@ COMMANDS = {
     "discovered-artists": "get_discovered_artists",
     "critics-lists": "get_critics_lists",
     "listening-graph": "get_listening_graph",
+    "artist-trajectories": "get_artist_trajectories",
+    "artist-cohort-retention": "get_artist_cohort_retention",
 }
 
 
@@ -79,6 +81,50 @@ def get_listening_graph(
         focus_artist=focus_artist,
         hops=hops,
         output_format=output_format,
+    )
+
+
+def get_artist_trajectories(
+    state: AnalysisState,
+    artists: list[str],
+    granularity: str = "month",
+    start: str | None = None,
+    end: str | None = None,
+    min_period_plays: int = 1,
+    dormancy_periods: int = 6,
+) -> dict[str, Any]:
+    """Return measured artist trajectories without editorial interpretation."""
+    return trajectories.artist_trajectories(
+        state.df,
+        artists,
+        granularity=granularity,
+        start=start,
+        end=end,
+        min_period_plays=min_period_plays,
+        dormancy_periods=dormancy_periods,
+    )
+
+
+def get_artist_cohort_retention(
+    state: AnalysisState,
+    cohort_granularity: str = "month",
+    activity_granularity: str = "month",
+    start: str | None = None,
+    end: str | None = None,
+    min_discovery_plays: int = 1,
+    min_active_plays: int = 1,
+    offsets: list[int] | None = None,
+) -> dict[str, Any]:
+    """Return discovery-cohort point retention measurements."""
+    return trajectories.cohort_retention(
+        state.df,
+        cohort_granularity=cohort_granularity,
+        activity_granularity=activity_granularity,
+        start=start,
+        end=end,
+        min_discovery_plays=min_discovery_plays,
+        min_active_plays=min_active_plays,
+        offsets=(1, 3, 6, 12, 24) if offsets is None else offsets,
     )
 
 def explore_taste_evolution(

@@ -74,6 +74,8 @@ def test_all_agent_commands_are_registered_in_help():
         "discovered-artists",
         "critics-lists",
         "listening-graph",
+        "artist-trajectories",
+        "artist-cohort-retention",
     ]
     output = runner.invoke(app, ["--help"]).output
     for command in expected:
@@ -281,3 +283,138 @@ def test_listening_graph_help_lists_graph_options():
         "--format",
     ]:
         assert option in output
+
+
+def test_artist_trajectories_cli_preserves_artists_and_forwards_options(monkeypatch):
+    import lastfm.commands_agent
+
+    captured = {}
+    monkeypatch.setattr(
+        lastfm.commands_agent,
+        "_run_agent_command",
+        lambda command, session, csv, params: captured.update(
+            command=command, session=session, csv=csv, params=params
+        ),
+    )
+    result = runner.invoke(
+        app,
+        [
+            "artist-trajectories",
+            "--session",
+            "live",
+            "--artist",
+            "B",
+            "--artist",
+            "A",
+            "--granularity",
+            "year",
+            "--start",
+            "2020",
+            "--end",
+            "2024",
+            "--min-period-plays",
+            "2",
+            "--dormancy-periods",
+            "3",
+        ],
+    )
+    assert result.exit_code == 0
+    assert captured["command"] == "artist-trajectories"
+    assert captured["params"] == {
+        "artists": ["B", "A"],
+        "granularity": "year",
+        "start": "2020",
+        "end": "2024",
+        "min_period_plays": 2,
+        "dormancy_periods": 3,
+    }
+
+
+def test_artist_cohort_cli_sorts_unique_offsets_and_forwards_options(monkeypatch):
+    import lastfm.commands_agent
+
+    captured = {}
+    monkeypatch.setattr(
+        lastfm.commands_agent,
+        "_run_agent_command",
+        lambda command, session, csv, params: captured.update(
+            command=command, params=params
+        ),
+    )
+    result = runner.invoke(
+        app,
+        [
+            "artist-cohort-retention",
+            "--session",
+            "live",
+            "--cohort-granularity",
+            "year",
+            "--activity-granularity",
+            "month",
+            "--start",
+            "2020",
+            "--end",
+            "2024",
+            "--min-discovery-plays",
+            "2",
+            "--min-active-plays",
+            "3",
+            "--offset",
+            "6",
+            "--offset",
+            "1",
+            "--offset",
+            "6",
+        ],
+    )
+    assert result.exit_code == 0
+    assert captured == {
+        "command": "artist-cohort-retention",
+        "params": {
+            "cohort_granularity": "year",
+            "activity_granularity": "month",
+            "start": "2020",
+            "end": "2024",
+            "min_discovery_plays": 2,
+            "min_active_plays": 3,
+            "offsets": [1, 6],
+        },
+    }
+
+
+@pytest.mark.parametrize(
+    "command_and_options",
+    [
+        [
+            "artist-trajectories",
+            "--session",
+            "live",
+            "--artist",
+            "A",
+            "--granularity",
+            "week",
+        ],
+        [
+            "artist-trajectories",
+            "--session",
+            "live",
+            "--artist",
+            "A",
+            "--min-period-plays",
+            "0",
+        ],
+        ["artist-cohort-retention", "--session", "live", "--offset", "-1"],
+        [
+            "artist-cohort-retention",
+            "--session",
+            "live",
+            "--start",
+            "2024-02",
+            "--end",
+            "2024-01",
+        ],
+    ],
+)
+def test_trajectory_clis_reject_invalid_parameters(command_and_options):
+    result = runner.invoke(app, command_and_options)
+    assert result.exit_code == 2

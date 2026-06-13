@@ -64,3 +64,9 @@ Use `listening-graph` when the question concerns communities, bridge artists, or
 The analytics layer may report community IDs, centralities, participation, articulation points, and neighborhoods. The journalism layer decides whether those measurements support a useful musical description. Name a community only from its member evidence, and call a bridge important only when the relevant metric and graph scope are stated.
 
 Do not compare centrality values from graphs built with different filters as though they share one scale. Report `min_artist_plays`, `min_shared_sessions`, date bounds, and whether betweenness was sampled.
+
+## Relationship Trajectory Evidence
+
+Use artist trajectories and cohort retention as analytics measurements only. A dormant interval or return records a pattern in observed scrobbles; it does not explain why listening stopped or resumed. Treat trailing inactivity as censored, never as completed dormancy or abandonment.
+
+A journalist may call an artist relationship “enduring” only by citing the relevant span, active-period share, dormant intervals, returns, and recent activity. State the observation window and thresholds, and keep evidence separate from interpretation.

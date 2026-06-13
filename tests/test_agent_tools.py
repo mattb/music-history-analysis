@@ -1,4 +1,10 @@
-from lastfm.agent_tools import dispatch, get_listening_stats, get_top_artists
+from lastfm.agent_tools import (
+    dispatch,
+    get_artist_cohort_retention,
+    get_artist_trajectories,
+    get_listening_stats,
+    get_top_artists,
+)
 from lastfm.analysis_state import AnalysisState
 
 
@@ -70,3 +76,16 @@ def test_dispatch_listening_graph_forwards_every_option(monkeypatch, sample_csv)
         "hops": 2,
         "output_format": "graphml",
     }
+
+
+def test_trajectory_agent_tools_are_thin_dataframe_wrappers(monkeypatch, sample_csv):
+    state = loaded_lightweight_state(monkeypatch, sample_csv)
+    trajectories = get_artist_trajectories(
+        state, ["Artist A", "missing"], start="2024-01", end="2024-02"
+    )
+    assert [item["status"] for item in trajectories["artists"]] == ["ok", "not_found"]
+    retention = get_artist_cohort_retention(state, offsets=[0, 1])
+    assert retention["parameters"]["offsets"] == [0, 1]
+    assert (
+        dispatch(state, "artist-trajectories", {"artists": ["Artist A"]})["count"] == 1
+    )
