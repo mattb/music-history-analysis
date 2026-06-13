@@ -419,116 +419,89 @@ def test_session_start_help_documents_lifecycle():
     assert "ready" in result.output
 
 
-def test_listening_graph_one_shot_json(monkeypatch, sample_csv):
+@pytest.mark.parametrize(
+    ("command", "options"),
+    [
+        (
+            "listening-graph",
+            ["--min-artist-plays", "1", "--min-shared-sessions", "1"],
+        ),
+        ("artist-trajectories", ["--artist", "Artist A"]),
+        ("artist-cohort-retention", ["--offset", "1"]),
+        (
+            "life-event-window",
+            [
+                "--event-date",
+                "2024-01-02",
+                "--pre-days",
+                "1",
+                "--event-days",
+                "1",
+                "--post-days",
+                "1",
+                "--baseline-days",
+                "1",
+            ],
+        ),
+        ("listening-change-points", []),
+    ],
+)
+def test_dataframe_only_one_shots_do_not_build_embeddings(
+    monkeypatch, sample_csv, command, options
+):
     import lastfm.analysis_state
 
-    monkeypatch.setattr(
-        lastfm.analysis_state.AnalysisState, "_build_user_embeddings", lambda self: None
-    )
-    monkeypatch.setattr(
-        lastfm.analysis_state.AnalysisState,
+    def forbidden(*_args, **_kwargs):
+        raise AssertionError(f"{command} must not build embeddings")
+
+    for builder in (
+        "_build_user_embeddings",
         "_build_critics_embeddings",
-        lambda self: None,
-    )
-    monkeypatch.setattr(
-        lastfm.analysis_state.AnalysisState, "_build_critic_vectors", lambda self: None
-    )
-    result = runner.invoke(
-        app,
-        [
-            "listening-graph",
-            "--csv",
-            str(sample_csv),
-            "--min-artist-plays",
-            "1",
-            "--min-shared-sessions",
-            "1",
-            "--json",
-        ],
-    )
-    assert result.exit_code == 0
+        "_build_critic_vectors",
+    ):
+        monkeypatch.setattr(lastfm.analysis_state.AnalysisState, builder, forbidden)
+
+    result = runner.invoke(app, [command, "--csv", str(sample_csv), *options, "--json"])
+    assert result.exit_code == 0, result.output
     payload = json.loads(result.output)
-    assert payload["command"] == "listening-graph"
-    assert payload["result"]["parameters"]["min_artist_plays"] == 1
+    assert payload["command"] == command
     assert json.dumps(payload, allow_nan=False)
 
 
-def test_listening_graph_cli_validates_parameters(sample_csv):
-    invalid = runner.invoke(
-        app,
-        [
-            "listening-graph",
-            "--csv",
-            str(sample_csv),
-            "--gap-minutes",
-            "0",
-        ],
-    )
-    assert invalid.exit_code == 2
-    assert "positive" in invalid.output
-    years = runner.invoke(
-        app,
-        [
-            "listening-graph",
-            "--csv",
-            str(sample_csv),
-            "--start-year",
-            "2025",
-            "--end-year",
-            "2024",
-        ],
-    )
-    assert years.exit_code == 2
-    assert "start-year" in years.output
+@pytest.mark.parametrize(
+    ("options", "message"),
+    [
+        (
+            ["--community-resolution", "0"],
+            "community_resolution must be finite and positive",
+        ),
+        (["--hops", "0"], "hops must be positive"),
+        (["--format", "gexf"], "output_format must be json or graphml"),
+    ],
+)
+def test_listening_graph_semantic_errors_are_json(sample_csv, options, message):
+    result = runner.invoke(app, ["listening-graph", "--csv", str(sample_csv), *options])
+    assert result.exit_code == 1
+    payload = json.loads(result.output)
+    assert payload == {
+        "ok": False,
+        "command": "listening-graph",
+        "session_id": None,
+        "error": {"code": "VALUEERROR", "message": message, "retryable": False},
+    }
 
 
-def test_listening_graph_cli_rejects_invalid_format_and_both_targets(sample_csv):
-    invalid_format = runner.invoke(
-        app, ["listening-graph", "--csv", str(sample_csv), "--format", "gexf"]
-    )
-    assert invalid_format.exit_code == 2
-    assert "json or graphml" in invalid_format.output
+def test_listening_graph_target_and_type_errors_remain_framework_errors(sample_csv):
     both = runner.invoke(
         app,
         ["listening-graph", "--csv", str(sample_csv), "--session", "live"],
     )
     assert both.exit_code == 2
     assert "exactly one" in both.output
-
-
-@pytest.mark.parametrize(
-    "option",
-    [
-        "--gap-minutes",
-        "--min-artist-plays",
-        "--min-shared-sessions",
-        "--community-resolution",
-        "--betweenness-samples",
-        "--hops",
-    ],
-)
-def test_listening_graph_cli_rejects_nonpositive_options(sample_csv, option):
     result = runner.invoke(
-        app, ["listening-graph", "--csv", str(sample_csv), option, "0"]
+        app, ["listening-graph", "--csv", str(sample_csv), "--hops", "many"]
     )
     assert result.exit_code == 2
-    assert "positive" in result.output
-
-
-@pytest.mark.parametrize("resolution", ["nan", "inf", "-inf"])
-def test_listening_graph_cli_rejects_nonfinite_resolution(sample_csv, resolution):
-    result = runner.invoke(
-        app,
-        [
-            "listening-graph",
-            "--csv",
-            str(sample_csv),
-            "--community-resolution",
-            resolution,
-        ],
-    )
-    assert result.exit_code == 2
-    assert "finite and positive" in result.output
 
 
 def test_listening_graph_cli_forwards_every_option(monkeypatch):
@@ -705,41 +678,61 @@ def test_artist_cohort_cli_sorts_unique_offsets_and_forwards_options(monkeypatch
 
 
 @pytest.mark.parametrize(
-    "command_and_options",
+    ("command_and_options", "command", "message"),
     [
-        [
+        (
+            ["artist-trajectories", "--artist", "A", "--granularity", "week"],
             "artist-trajectories",
-            "--session",
-            "live",
-            "--artist",
-            "A",
-            "--granularity",
-            "week",
-        ],
-        [
+            "granularity must be month or year",
+        ),
+        (
+            ["artist-trajectories", "--artist", "A", "--min-period-plays", "0"],
             "artist-trajectories",
-            "--session",
-            "live",
-            "--artist",
-            "A",
-            "--min-period-plays",
-            "0",
-        ],
-        ["artist-cohort-retention", "--session", "live", "--offset", "-1"],
-        [
+            "min_period_plays must be a positive integer",
+        ),
+        (
+            [
+                "artist-trajectories",
+                "--artist",
+                "A",
+                "--start",
+                "2024-02",
+                "--end",
+                "2024-01",
+            ],
+            "artist-trajectories",
+            "start must not exceed end",
+        ),
+        (
+            ["artist-cohort-retention", "--offset", "-1"],
             "artist-cohort-retention",
-            "--session",
-            "live",
-            "--start",
-            "2024-02",
-            "--end",
-            "2024-01",
-        ],
+            "offset must be a nonnegative integer",
+        ),
+        (
+            ["artist-cohort-retention", "--cohort-granularity", "week"],
+            "artist-cohort-retention",
+            "granularity must be month or year",
+        ),
+        (
+            ["artist-cohort-retention", "--min-active-plays", "0"],
+            "artist-cohort-retention",
+            "min_active_plays must be a positive integer",
+        ),
     ],
 )
-def test_trajectory_clis_reject_invalid_parameters(command_and_options):
-    result = runner.invoke(app, command_and_options)
-    assert result.exit_code == 2
+def test_trajectory_semantic_errors_are_json(
+    sample_csv, command_and_options, command, message
+):
+    result = runner.invoke(app, [*command_and_options, "--csv", str(sample_csv)])
+    assert result.exit_code == 1
+    payload = json.loads(result.output)
+    assert payload["ok"] is False
+    assert payload["command"] == command
+    assert payload["error"] == {
+        "code": "VALUEERROR",
+        "message": message,
+        "retryable": False,
+    }
 
 
 def test_artist_trajectories_one_shot_json_real_dispatch(monkeypatch, sample_csv):

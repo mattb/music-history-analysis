@@ -50,7 +50,7 @@ Each cohort also reports size, mean and median plays in the members' respective 
 
 ## Trajectory output schema
 
-The trajectory batch returns `artists` in query order and `count`. Each artist object contains:
+The trajectory batch returns `artists` in query order and `count`. Each successful or `not_found` artist object contains `schema_version: 1` plus:
 
 - `query_artist`, `status`, and resolved `artist`; a miss has `status: not_found`, a null artist, and null measurements.
 - `parameters`: granularity, requested bounds, activity threshold, and dormancy threshold.
@@ -66,7 +66,7 @@ For example, counts `[1, 0, 2, 0]` from January through April with `min_period_p
 
 ## Cohort output schema
 
-The cohort result contains:
+The cohort result contains top-level `schema_version: 1` plus:
 
 - `parameters`: cohort and activity granularities, requested bounds, discovery/activity thresholds, and normalized offsets.
 - `observation`: requested cohort bounds, source cohort bounds, the last actually observable activity period after clipping by `end`, truncation/censoring flags, and source artist count.

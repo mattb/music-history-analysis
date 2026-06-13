@@ -121,20 +121,28 @@ def _observation(
     }
 
 
-def artist_trajectory(
+def _prepare_trajectory(
     df: pd.DataFrame,
-    artist: str,
-    granularity: str = "month",
-    start: str | None = None,
-    end: str | None = None,
-    min_period_plays: int = 1,
-    dormancy_periods: int = 6,
-) -> dict[str, Any]:
-    """Measure one artist over a dense inclusive observation window."""
+    granularity: str,
+    start: str | None,
+    end: str | None,
+    min_period_plays: int,
+    dormancy_periods: int,
+) -> tuple[
+    pd.DataFrame,
+    str,
+    int,
+    int,
+    pd.Period,
+    pd.Period,
+    pd.Period,
+    pd.Period,
+    pd.PeriodIndex,
+    dict[str, Any],
+    dict[str, pd.Index],
+]:
     frame = _validate_history(df)
     freq = _frequency(granularity)
-    if not isinstance(artist, str) or not artist:
-        raise ValueError("artist must be nonempty")
     min_period_plays = _positive_integer(min_period_plays, "min_period_plays")
     dormancy_periods = _positive_integer(dormancy_periods, "dormancy_periods")
     first, last, source_start, source_end = _window(frame, granularity, start, end)
@@ -146,11 +154,66 @@ def artist_trajectory(
         "min_period_plays": min_period_plays,
         "dormancy_periods": dormancy_periods,
     }
+    identities = frame["artist"].map(str.casefold)
+    artist_index = {
+        identity: pd.Index(indices)
+        for identity, indices in identities.groupby(
+            identities, sort=False
+        ).groups.items()
+    }
+    return (
+        frame,
+        freq,
+        min_period_plays,
+        dormancy_periods,
+        first,
+        last,
+        source_start,
+        source_end,
+        periods,
+        parameters,
+        artist_index,
+    )
 
-    matches = frame[frame["artist"].map(str.casefold) == artist.casefold()].copy()
+
+def _artist_trajectory_from_prepared(
+    prepared: tuple[
+        pd.DataFrame,
+        str,
+        int,
+        int,
+        pd.Period,
+        pd.Period,
+        pd.Period,
+        pd.Period,
+        pd.PeriodIndex,
+        dict[str, Any],
+        dict[str, pd.Index],
+    ],
+    artist: str,
+) -> dict[str, Any]:
+    (
+        frame,
+        freq,
+        min_period_plays,
+        dormancy_periods,
+        first,
+        last,
+        source_start,
+        source_end,
+        periods,
+        parameters,
+        artist_index,
+    ) = prepared
+    if not isinstance(artist, str) or not artist:
+        raise ValueError("artist must be nonempty")
+
+    indices = artist_index.get(artist.casefold())
+    matches = frame.loc[indices].copy() if indices is not None else frame.iloc[0:0]
     if matches.empty:
         zero_counts = pd.Series(0, index=periods, dtype="int64")
         return {
+            "schema_version": 1,
             "query_artist": artist,
             "status": "not_found",
             "artist": None,
@@ -295,6 +358,7 @@ def artist_trajectory(
         )
 
     return {
+        "schema_version": 1,
         "query_artist": artist,
         "status": "ok",
         "artist": display,
@@ -322,6 +386,27 @@ def artist_trajectory(
     }
 
 
+def artist_trajectory(
+    df: pd.DataFrame,
+    artist: str,
+    granularity: str = "month",
+    start: str | None = None,
+    end: str | None = None,
+    min_period_plays: int = 1,
+    dormancy_periods: int = 6,
+) -> dict[str, Any]:
+    """Measure one artist over a dense inclusive observation window."""
+    prepared = _prepare_trajectory(
+        df,
+        granularity,
+        start,
+        end,
+        min_period_plays,
+        dormancy_periods,
+    )
+    return _artist_trajectory_from_prepared(prepared, artist)
+
+
 def artist_trajectories(
     df: pd.DataFrame,
     artists: Sequence[str],
@@ -330,7 +415,15 @@ def artist_trajectories(
     """Measure artists in query order without fuzzy matching."""
     if not artists:
         raise ValueError("artist list must be nonempty")
-    results = [artist_trajectory(df, artist, **kwargs) for artist in artists]
+    prepared = _prepare_trajectory(
+        df,
+        kwargs.get("granularity", "month"),
+        kwargs.get("start"),
+        kwargs.get("end"),
+        kwargs.get("min_period_plays", 1),
+        kwargs.get("dormancy_periods", 6),
+    )
+    results = [_artist_trajectory_from_prepared(prepared, artist) for artist in artists]
     return {"artists": results, "count": len(results)}
 
 
@@ -456,6 +549,7 @@ def cohort_retention(
         )
 
     return {
+        "schema_version": 1,
         "parameters": {
             "cohort_granularity": cohort_granularity,
             "activity_granularity": activity_granularity,

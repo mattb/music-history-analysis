@@ -74,6 +74,31 @@ def test_batch_preserves_query_order_and_not_found_is_structured():
         "ALPHA",
     ]
     assert [item["status"] for item in result["artists"]] == ["ok", "not_found", "ok"]
+    assert [item["schema_version"] for item in result["artists"]] == [1, 1, 1]
+
+
+def test_batch_validates_history_once(monkeypatch):
+    import lastfm.trajectories
+
+    calls = 0
+    original = lastfm.trajectories._validate_history
+
+    def counted(frame):
+        nonlocal calls
+        calls += 1
+        return original(frame)
+
+    monkeypatch.setattr(lastfm.trajectories, "_validate_history", counted)
+    result = artist_trajectories(
+        history([("2024-01-01", "A"), ("2024-01-02", "B")]),
+        ["B", "missing", "A"],
+    )
+    assert [item["query_artist"] for item in result["artists"]] == [
+        "B",
+        "missing",
+        "A",
+    ]
+    assert calls == 1
 
 
 def test_minimum_activity_threshold_changes_active_metrics_not_play_counts():
@@ -176,6 +201,7 @@ def test_cohort_uses_first_ever_activity_and_exact_offset_retention():
         offsets=[1, 2, 3, 5, 3],
         min_discovery_plays=1,
     )
+    assert result["schema_version"] == 1
     cohort = result["cohorts"][0]
     assert cohort["cohort"] == "2024-01"
     assert cohort["cohort_size"] == 2  # old is excluded by full-history discovery

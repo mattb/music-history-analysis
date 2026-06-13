@@ -3,8 +3,6 @@
 from __future__ import annotations
 
 import json
-import math
-import re
 from contextlib import redirect_stdout
 from io import StringIO
 from pathlib import Path
@@ -71,7 +69,14 @@ def _run_agent_command(command: str, session: str | None, csv: Path | None, para
             session_id, state = _resolve_target(
                 session,
                 csv,
-                lightweight=command in {"life-event-window", "listening-change-points"},
+                lightweight=command
+                in {
+                    "listening-graph",
+                    "artist-trajectories",
+                    "artist-cohort-retention",
+                    "life-event-window",
+                    "listening-change-points",
+                },
             )
             if session_id:
                 result = dispatch_to_session(session_id, command, params)
@@ -93,23 +98,6 @@ def _run_agent_command(command: str, session: str | None, csv: Path | None, para
 
 # fmt: on
 def register(app: typer.Typer) -> None:
-    def validate_granularity(value: str, option: str) -> None:
-        if value not in {"month", "year"}:
-            raise typer.BadParameter(
-                f"{option} must be month or year", param_hint=f"--{option}"
-            )
-
-    def validate_bounds(start: str | None, end: str | None, granularity: str) -> None:
-        pattern = r"\d{4}-(0[1-9]|1[0-2])" if granularity == "month" else r"\d{4}"
-        expected = "YYYY-MM" if granularity == "month" else "YYYY"
-        for name, value in (("start", start), ("end", end)):
-            if value is not None and re.fullmatch(pattern, value) is None:
-                raise typer.BadParameter(
-                    f"{name} must use {expected} format", param_hint=f"--{name}"
-                )
-        if start is not None and end is not None and start > end:
-            raise typer.BadParameter("start must not exceed end", param_hint="--start")
-
     @app.command(
         "listening-change-points",
         help=_agent_help("Detect candidate changes in listening composition."),
@@ -243,12 +231,6 @@ def register(app: typer.Typer) -> None:
             True, "--json", help="Emit structured JSON on stdout."
         ),
     ):
-        validate_granularity(granularity, "granularity")
-        validate_bounds(start, end, granularity)
-        if not artists or any(not artist for artist in artists):
-            raise typer.BadParameter("artist must be nonempty", param_hint="--artist")
-        if min_period_plays <= 0 or dormancy_periods <= 0:
-            raise typer.BadParameter("thresholds must be positive")
         _run_agent_command(
             "artist-trajectories",
             session,
@@ -299,18 +281,9 @@ def register(app: typer.Typer) -> None:
             True, "--json", help="Emit structured JSON on stdout."
         ),
     ):
-        validate_granularity(cohort_granularity, "cohort-granularity")
-        validate_granularity(activity_granularity, "activity-granularity")
-        validate_bounds(start, end, cohort_granularity)
-        if min_discovery_plays <= 0 or min_active_plays <= 0:
-            raise typer.BadParameter("thresholds must be positive")
         selected_offsets = (
             [1, 3, 6, 12, 24] if offsets is None else sorted(set(offsets))
         )
-        if not selected_offsets or any(offset < 0 for offset in selected_offsets):
-            raise typer.BadParameter(
-                "offsets must be nonnegative", param_hint="--offset"
-            )
         _run_agent_command(
             "artist-cohort-retention",
             session,
@@ -345,27 +318,6 @@ def register(app: typer.Typer) -> None:
         output_format: str = typer.Option("json", "--format", help="Result format: json or graphml."),
         _json_output: bool = typer.Option(True, "--json", help="Emit structured JSON on stdout."),
     ):
-        if not math.isfinite(community_resolution) or community_resolution <= 0:
-            raise typer.BadParameter(
-                "community-resolution must be finite and positive",
-                param_hint="--community-resolution",
-            )
-        values = {
-            "gap-minutes": gap_minutes,
-            "min-artist-plays": min_artist_plays,
-            "min-shared-sessions": min_shared_sessions,
-            "betweenness-samples": betweenness_samples,
-            "hops": hops,
-        }
-        for name, value in values.items():
-            if value <= 0:
-                raise typer.BadParameter(f"{name} must be positive", param_hint=f"--{name}")
-        if start_year is not None and end_year is not None and start_year > end_year:
-            raise typer.BadParameter(
-                "start-year must not exceed end-year", param_hint="--start-year"
-            )
-        if output_format not in {"json", "graphml"}:
-            raise typer.BadParameter("format must be json or graphml", param_hint="--format")
         _run_agent_command(
             "listening-graph",
             session,
