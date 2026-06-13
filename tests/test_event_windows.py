@@ -372,6 +372,32 @@ def test_nonexistent_local_event_date_rejects_zero_duration_utc_interval():
         compare_event_window(df, spec)
 
 
+def test_multiday_event_excludes_skipped_civil_date_from_rates_and_reports_it():
+    df = plays(
+        ("2011-12-29T12:00:00Z", "event", "One", "x"),
+        ("2011-12-30T12:00:00Z", "tail", "Two", "y"),
+    )
+    result = compare_event_window(
+        df,
+        EventWindowSpec(
+            date(2011, 12, 29),
+            timezone="Pacific/Apia",
+            pre_days=1,
+            event_days=2,
+            post_days=1,
+            baseline_days=1,
+        ),
+    )
+    event = result["periods"]["event"]
+    assert event["requested_calendar_days"] == 2
+    assert event["requested_days"] == 1
+    assert event["covered_days"] == 1
+    assert event["plays"] == 1
+    assert event["plays_per_covered_day"] == 1.0
+    assert event["skipped_local_dates"] == ["2011-12-30"]
+    assert result["diagnostics"]["skipped_local_dates"]["event"] == ["2011-12-30"]
+
+
 def test_unrepresentable_window_bounds_raise_clear_value_error():
     spec = EventWindowSpec(
         date.min,

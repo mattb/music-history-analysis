@@ -48,9 +48,15 @@ class _Interval:
     local_end: date
     utc_start: datetime
     utc_end: datetime
+    valid_local_dates: tuple[date, ...]
+    skipped_local_dates: tuple[date, ...]
 
     @property
     def days(self) -> int:
+        return len(self.valid_local_dates)
+
+    @property
+    def calendar_days(self) -> int:
         return (self.local_end - self.local_start).days
 
 
@@ -64,11 +70,25 @@ def _midnight(day: date, zone: ZoneInfo) -> datetime:
 
 
 def _interval(start: date, end: date, zone: ZoneInfo) -> _Interval:
+    valid_dates = []
+    skipped_dates = []
+    current = start
+    while current < end:
+        following = current + timedelta(days=1)
+        current_utc = _midnight(current, zone).astimezone(timezone.utc)
+        following_utc = _midnight(following, zone).astimezone(timezone.utc)
+        if following_utc > current_utc:
+            valid_dates.append(current)
+        else:
+            skipped_dates.append(current)
+        current = following
     return _Interval(
         local_start=start,
         local_end=end,
         utc_start=_midnight(start, zone).astimezone(timezone.utc),
         utc_end=_midnight(end, zone).astimezone(timezone.utc),
+        valid_local_dates=tuple(valid_dates),
+        skipped_local_dates=tuple(skipped_dates),
     )
 
 
@@ -77,7 +97,10 @@ def _clip(
 ) -> _Interval | None:
     start = max(interval.local_start, coverage_start)
     end = min(interval.local_end, coverage_end)
-    return _interval(start, end, zone) if start < end else None
+    if start >= end:
+        return None
+    clipped = _interval(start, end, zone)
+    return clipped if clipped.days else None
 
 
 def _iso_utc(value: datetime | pd.Timestamp | None) -> str | None:
@@ -143,8 +166,12 @@ def _period_payload(
 ) -> tuple[dict[str, Any], Counter[tuple[str, ...]]]:
     frame = _slice(df, covered)
     counts = _counts(frame, entity)
+    requested_calendar_days = sum(item.calendar_days for item in requested)
     requested_days = sum(item.days for item in requested)
     covered_days = sum(item.days for item in covered)
+    skipped_local_dates = sorted(
+        {day for item in requested for day in item.skipped_local_dates}
+    )
     plays = len(frame)
     ranked_counts = sorted(counts.items(), key=lambda item: (-item[1], item[0]))
     returned_counts = ranked_counts[:top_n]
@@ -174,8 +201,10 @@ def _period_payload(
         "covered_local_end_exclusive": covered[-1].local_end.isoformat()
         if covered
         else None,
+        "requested_calendar_days": requested_calendar_days,
         "requested_days": requested_days,
         "covered_days": covered_days,
+        "skipped_local_dates": [day.isoformat() for day in skipped_local_dates],
         "plays": plays,
         "plays_per_covered_day": _round(plays / covered_days) if covered_days else None,
         "unique_artists": int(frame["artist"].map(_clean).replace("", pd.NA).nunique())
@@ -193,6 +222,9 @@ def _period_payload(
                 "local_end_exclusive": item.local_end.isoformat(),
                 "start_utc": _iso_utc(item.utc_start),
                 "end_utc": _iso_utc(item.utc_end),
+                "skipped_local_dates": [
+                    day.isoformat() for day in item.skipped_local_dates
+                ],
             }
             for item in covered
         ],
@@ -222,7 +254,7 @@ def _requested_intervals(spec: EventWindowSpec) -> dict[str, _Interval]:
     except OverflowError as exc:
         raise ValueError("window bounds are unrepresentable as calendar dates") from exc
     for name, interval in local.items():
-        if interval.utc_end <= interval.utc_start:
+        if not interval.valid_local_dates or interval.utc_end <= interval.utc_start:
             raise ValueError(
                 f"{name} interval must have positive UTC duration; "
                 "a requested local date may not exist in this timezone"
@@ -260,6 +292,7 @@ def compare_event_window(df: pd.DataFrame, spec: EventWindowSpec) -> dict[str, A
     last_timestamp = source["timestamp"].iloc[-1]
     coverage_start = first_timestamp.tz_convert(zone).date()
     coverage_end = last_timestamp.tz_convert(zone).date() + timedelta(days=1)
+    coverage_interval = _interval(coverage_start, coverage_end, zone)
     covered = {
         name: _clip(interval, coverage_start, coverage_end, zone)
         for name, interval in requested.items()
@@ -358,7 +391,8 @@ def compare_event_window(df: pd.DataFrame, spec: EventWindowSpec) -> dict[str, A
         )
     )
 
-    baseline_requested_days = 2 * spec.baseline_days
+    baseline_requested_calendar_days = periods["baseline"]["requested_calendar_days"]
+    baseline_requested_days = periods["baseline"]["requested_days"]
     baseline_covered_days = periods["baseline"]["covered_days"]
     return {
         "schema_version": 1,
@@ -380,9 +414,14 @@ def compare_event_window(df: pd.DataFrame, spec: EventWindowSpec) -> dict[str, A
                 "last_timestamp_utc": _iso_utc(last_timestamp),
                 "first_local_date": coverage_start.isoformat(),
                 "last_local_date": (coverage_end - timedelta(days=1)).isoformat(),
-                "covered_local_days": (coverage_end - coverage_start).days,
+                "covered_calendar_days": coverage_interval.calendar_days,
+                "covered_local_days": coverage_interval.days,
+                "skipped_local_dates": [
+                    day.isoformat() for day in coverage_interval.skipped_local_dates
+                ],
             },
             "baseline": {
+                "requested_calendar_days": baseline_requested_calendar_days,
                 "requested_days": baseline_requested_days,
                 "covered_days": baseline_covered_days,
                 "clipped": baseline_covered_days < baseline_requested_days,
@@ -396,6 +435,9 @@ def compare_event_window(df: pd.DataFrame, spec: EventWindowSpec) -> dict[str, A
                     "entities_returned": period["entities_returned"],
                 }
                 for name, period in periods.items()
+            },
+            "skipped_local_dates": {
+                name: period["skipped_local_dates"] for name, period in periods.items()
             },
         },
     }

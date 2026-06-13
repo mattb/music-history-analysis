@@ -22,13 +22,13 @@ The combined `baseline` is the union of `baseline_before` and `baseline_after`; 
 
 ## Coverage
 
-Source coverage runs from the local date containing the first scrobble through the local date containing the last scrobble, inclusive. Each requested interval is clipped to that coverage. Rates use covered local calendar days, not requested days:
+Source coverage runs from the local date containing the first scrobble through the local date containing the last scrobble, inclusive. Each requested interval is clipped to that coverage. Every constituent local date is checked against the timezone: it exists only when the UTC instant for its next local midnight is later than the UTC instant for its own midnight. A timezone can skip a civil date entirely; such a date remains visible in `requested_calendar_days` and `skipped_local_dates` but is excluded from `requested_days`, `covered_days`, and rate denominators. Rates use covered, existent local calendar days:
 
 \[
 plays\_per\_covered\_day = \frac{plays}{covered\_days}
 \]
 
-The result distinguishes two cases that must not be conflated. A covered interval with zero plays is observed as zero. An interval outside source coverage has zero covered days and a null rate; absent history is not converted into zero listening. The event interval must overlap source coverage or the command fails. Coverage only describes the bounds of the supplied history: it cannot detect unscrobbled listening or gaps inside those bounds.
+The result distinguishes two cases that must not be conflated. A covered interval with zero plays is observed as zero. An interval outside source coverage has zero covered days and a null rate; absent history is not converted into zero listening. A one-day event on a wholly nonexistent civil date fails. A multi-day event containing both existent and skipped dates succeeds, using only existent dates in its denominator. The event interval must overlap source coverage or the command fails. Coverage only describes the bounds of the supplied history: it cannot detect unscrobbled listening or gaps inside those bounds.
 
 ## Entity measurements
 
@@ -64,7 +64,7 @@ The top-level result contains:
 - `entities`: counts, shares, post-minus-pre deltas, baseline expectations and residuals, presence flags, and first-play evidence.
 - `diagnostics`: source timestamp and local-date bounds, combined-baseline clipping, and empty requested periods.
 
-Each period includes requested and covered UTC boundaries, requested and covered local boundaries, day counts, plays and daily rate, unique counts, bounded ranked `entity_counts` and `entity_shares`, truncation diagnostics, and the covered interval parts. The combined baseline may contain two non-contiguous parts. Window construction fails clearly if date arithmetic exceeds Python's representable calendar or a requested local-date interval has no positive UTC duration, as with a civil date skipped by a timezone transition.
+Each period includes requested and covered UTC boundaries, requested and covered local boundaries, nominal `requested_calendar_days`, existent `requested_days`, existent `covered_days`, `skipped_local_dates`, plays and daily rate, unique counts, bounded ranked `entity_counts` and `entity_shares`, truncation diagnostics, and the covered interval parts. The combined baseline may contain two non-contiguous parts. Window construction fails clearly if date arithmetic exceeds Python's representable calendar or an entire requested interval has no positive UTC duration.
 
 ## Worked example
 
