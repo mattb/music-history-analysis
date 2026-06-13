@@ -1,4 +1,4 @@
-from lastfm.agent_tools import get_listening_stats, get_top_artists
+from lastfm.agent_tools import dispatch, get_listening_stats, get_top_artists
 from lastfm.analysis_state import AnalysisState
 
 
@@ -25,3 +25,17 @@ def test_get_top_artists(monkeypatch, sample_csv):
         {"artist": "Artist A", "plays": 2},
         {"artist": "Artist B", "plays": 1},
     ]
+
+
+def test_dispatch_listening_graph(monkeypatch, sample_csv):
+    state = loaded_lightweight_state(monkeypatch, sample_csv)
+    result = dispatch(
+        state,
+        "listening-graph",
+        {
+            "min_artist_plays": 1,
+            "min_shared_sessions": 1,
+        },
+    )
+    assert result["graph_type"] == "artist_session_cooccurrence"
+    assert result["summary"]["nodes"] == 3

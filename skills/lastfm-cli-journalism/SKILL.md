@@ -56,3 +56,11 @@ For blind spots or recommendations, triangulate personal affinity, critic/releas
 - Name absences as evidence while acknowledging metadata and scrobble limitations.
 - Avoid generic taste questions or generic music criticism.
 - Use the repo's writing style when producing narrative prose: concise, first-person-compatible, and evidence-led.
+
+## Graph Evidence
+
+Use `listening-graph` when the question concerns communities, bridge artists, or local neighborhoods. Treat its communities as unnamed numerical partitions until you inspect their members. Treat edge weights as shared listening sessions, not stylistic similarity.
+
+The analytics layer may report community IDs, centralities, participation, articulation points, and neighborhoods. The journalism layer decides whether those measurements support a useful musical description. Name a community only from its member evidence, and call a bridge important only when the relevant metric and graph scope are stated.
+
+Do not compare centrality values from graphs built with different filters as though they share one scale. Report `min_artist_plays`, `min_shared_sessions`, date bounds, and whether betweenness was sampled.

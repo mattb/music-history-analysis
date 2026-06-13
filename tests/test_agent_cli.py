@@ -17,9 +17,17 @@ def test_agent_command_requires_session_or_csv():
 def test_listening_stats_one_shot_json(monkeypatch, sample_csv):
     import lastfm.analysis_state
 
-    monkeypatch.setattr(lastfm.analysis_state.AnalysisState, "_build_user_embeddings", lambda self: None)
-    monkeypatch.setattr(lastfm.analysis_state.AnalysisState, "_build_critics_embeddings", lambda self: None)
-    monkeypatch.setattr(lastfm.analysis_state.AnalysisState, "_build_critic_vectors", lambda self: None)
+    monkeypatch.setattr(
+        lastfm.analysis_state.AnalysisState, "_build_user_embeddings", lambda self: None
+    )
+    monkeypatch.setattr(
+        lastfm.analysis_state.AnalysisState,
+        "_build_critics_embeddings",
+        lambda self: None,
+    )
+    monkeypatch.setattr(
+        lastfm.analysis_state.AnalysisState, "_build_critic_vectors", lambda self: None
+    )
 
     result = runner.invoke(app, ["listening-stats", "--csv", str(sample_csv), "--json"])
     assert result.exit_code == 0
@@ -63,6 +71,7 @@ def test_all_agent_commands_are_registered_in_help():
         "overview-summary",
         "discovered-artists",
         "critics-lists",
+        "listening-graph",
     ]
     output = runner.invoke(app, ["--help"]).output
     for command in expected:
@@ -82,3 +91,82 @@ def test_session_start_help_documents_lifecycle():
     assert result.exit_code == 0
     assert "NDJSON lifecycle events" in result.output
     assert "ready" in result.output
+
+
+def test_listening_graph_one_shot_json(monkeypatch, sample_csv):
+    import lastfm.analysis_state
+
+    monkeypatch.setattr(
+        lastfm.analysis_state.AnalysisState, "_build_user_embeddings", lambda self: None
+    )
+    monkeypatch.setattr(
+        lastfm.analysis_state.AnalysisState,
+        "_build_critics_embeddings",
+        lambda self: None,
+    )
+    monkeypatch.setattr(
+        lastfm.analysis_state.AnalysisState, "_build_critic_vectors", lambda self: None
+    )
+    result = runner.invoke(
+        app,
+        [
+            "listening-graph",
+            "--csv",
+            str(sample_csv),
+            "--min-artist-plays",
+            "1",
+            "--min-shared-sessions",
+            "1",
+            "--json",
+        ],
+    )
+    assert result.exit_code == 0
+    payload = json.loads(result.output)
+    assert payload["command"] == "listening-graph"
+    assert payload["result"]["parameters"]["min_artist_plays"] == 1
+    assert json.dumps(payload, allow_nan=False)
+
+
+def test_listening_graph_cli_validates_parameters(sample_csv):
+    invalid = runner.invoke(
+        app,
+        [
+            "listening-graph",
+            "--csv",
+            str(sample_csv),
+            "--gap-minutes",
+            "0",
+        ],
+    )
+    assert invalid.exit_code == 2
+    assert "positive" in invalid.output
+    years = runner.invoke(
+        app,
+        [
+            "listening-graph",
+            "--csv",
+            str(sample_csv),
+            "--start-year",
+            "2025",
+            "--end-year",
+            "2024",
+        ],
+    )
+    assert years.exit_code == 2
+    assert "start-year" in years.output
+
+
+def test_listening_graph_help_lists_graph_options():
+    output = runner.invoke(app, ["listening-graph", "--help"]).output
+    for option in [
+        "--gap-minutes",
+        "--min-artist-plays",
+        "--min-shared-sessions",
+        "--community-resolution",
+        "--community-seed",
+        "--betweenness-samples",
+        "--artist",
+        "--hops",
+        "--format",
+    ]:
+        assert option in output

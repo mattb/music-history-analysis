@@ -42,7 +42,9 @@ def _agent_help(first_sentence: str) -> str:
     return f"{first_sentence}\n\n{AGENT_ANALYSIS_HELP_SUFFIX}"
 
 
-def _resolve_target(session: str | None, csv: Path | None) -> tuple[str | None, analysis_state.AnalysisState | None]:
+def _resolve_target(
+    session: str | None, csv: Path | None
+) -> tuple[str | None, analysis_state.AnalysisState | None]:
     if bool(session) == bool(csv):
         raise typer.BadParameter("Provide exactly one of --session or --csv")
     if session:
@@ -53,7 +55,9 @@ def _resolve_target(session: str | None, csv: Path | None) -> tuple[str | None, 
     return None, state
 
 
-def _run_agent_command(command: str, session: str | None, csv: Path | None, params: dict[str, Any]) -> None:
+def _run_agent_command(
+    command: str, session: str | None, csv: Path | None, params: dict[str, Any]
+) -> None:
     try:
         with redirect_stdout(StringIO()):
             session_id, state = _resolve_target(session, csv)
@@ -61,40 +65,138 @@ def _run_agent_command(command: str, session: str | None, csv: Path | None, para
                 result = dispatch_to_session(session_id, command, params)
             else:
                 result = agent_tools.dispatch(state, command, params)
-        print_json(success_envelope(command=command, result=result, session_id=session_id))
+        print_json(
+            success_envelope(command=command, result=result, session_id=session_id)
+        )
     except typer.BadParameter:
         raise
     except Exception as exc:
-        print_json(error_envelope(
-            command=command,
-            code=type(exc).__name__.upper(),
-            message=str(exc),
-            retryable=False,
-            session_id=session,
-        ))
+        print_json(
+            error_envelope(
+                command=command,
+                code=type(exc).__name__.upper(),
+                message=str(exc),
+                retryable=False,
+                session_id=session,
+            )
+        )
         raise typer.Exit(1)
 
 
 def register(app: typer.Typer) -> None:
+    @app.command(
+        "listening-graph", help=_agent_help("Measure artist co-listening sessions.")
+    )
+    def listening_graph(
+        session: str | None = typer.Option(
+            None, "--session", help="Named daemon session ID."
+        ),
+        csv: Path | None = typer.Option(
+            None, "--csv", help="Run one-shot against this scrobbles CSV."
+        ),
+        gap_minutes: int = typer.Option(
+            30, "--gap-minutes", help="Session inactivity boundary."
+        ),
+        min_artist_plays: int = typer.Option(
+            10, "--min-artist-plays", help="Minimum plays per artist."
+        ),
+        min_shared_sessions: int = typer.Option(
+            2, "--min-shared-sessions", help="Minimum shared sessions per edge."
+        ),
+        start_year: int | None = typer.Option(
+            None, "--start-year", help="Inclusive first year."
+        ),
+        end_year: int | None = typer.Option(
+            None, "--end-year", help="Inclusive last year."
+        ),
+        community_resolution: float = typer.Option(
+            1.0, "--community-resolution", help="Louvain resolution."
+        ),
+        community_seed: int = typer.Option(
+            0, "--community-seed", help="Louvain and sampling seed."
+        ),
+        betweenness_samples: int = typer.Option(
+            100, "--betweenness-samples", help="Maximum sampled pivots."
+        ),
+        artist: str | None = typer.Option(
+            None, "--artist", help="Exact display name to focus on."
+        ),
+        hops: int = typer.Option(1, "--hops", help="Neighborhood radius."),
+        output_format: str = typer.Option(
+            "json", "--format", help="Result format: json or graphml."
+        ),
+        json_output: bool = typer.Option(
+            True, "--json", help="Emit structured JSON on stdout."
+        ),
+    ):
+        values = {
+            "gap-minutes": gap_minutes,
+            "min-artist-plays": min_artist_plays,
+            "min-shared-sessions": min_shared_sessions,
+            "community-resolution": community_resolution,
+            "betweenness-samples": betweenness_samples,
+            "hops": hops,
+        }
+        for name, value in values.items():
+            if value <= 0:
+                raise typer.BadParameter(
+                    f"{name} must be positive", param_hint=f"--{name}"
+                )
+        if start_year is not None and end_year is not None and start_year > end_year:
+            raise typer.BadParameter(
+                "start-year must not exceed end-year", param_hint="--start-year"
+            )
+        if output_format not in {"json", "graphml"}:
+            raise typer.BadParameter(
+                "format must be json or graphml", param_hint="--format"
+            )
+        _run_agent_command(
+            "listening-graph",
+            session,
+            csv,
+            {
+                "gap_minutes": gap_minutes,
+                "min_artist_plays": min_artist_plays,
+                "min_shared_sessions": min_shared_sessions,
+                "start_year": start_year,
+                "end_year": end_year,
+                "community_resolution": community_resolution,
+                "community_seed": community_seed,
+                "betweenness_samples": betweenness_samples,
+                "focus_artist": artist,
+                "hops": hops,
+                "output_format": output_format,
+            },
+        )
+
     @app.command("session-start", help=SESSION_START_HELP)
     def session_start(
         session_id: str = typer.Option(..., "--session-id", help="Unique session ID."),
         csv: Path = typer.Option(..., "--csv", help="Scrobbles CSV for this session."),
-        json_output: bool = typer.Option(True, "--json", help="Emit NDJSON startup events."),
+        json_output: bool = typer.Option(
+            True, "--json", help="Emit NDJSON startup events."
+        ),
     ):
         try:
-            process = start_session(session_id=session_id, csv_path=csv, json_output=json_output)
+            process = start_session(
+                session_id=session_id, csv_path=csv, json_output=json_output
+            )
             if not json_output:
                 typer.echo(f"Started session {session_id} with pid {process.pid}")
         except Exception as exc:
             if json_output:
-                typer.echo(json.dumps(error_envelope(
-                    command="session-start",
-                    code=type(exc).__name__.upper(),
-                    message=str(exc),
-                    retryable=False,
-                    session_id=session_id,
-                ), sort_keys=True))
+                typer.echo(
+                    json.dumps(
+                        error_envelope(
+                            command="session-start",
+                            code=type(exc).__name__.upper(),
+                            message=str(exc),
+                            retryable=False,
+                            session_id=session_id,
+                        ),
+                        sort_keys=True,
+                    )
+                )
             else:
                 typer.echo(f"Error: {exc}", err=True)
             raise typer.Exit(1)
@@ -105,27 +207,35 @@ def register(app: typer.Typer) -> None:
         json_output: bool = typer.Option(True, "--json", help="Emit structured JSON."),
     ):
         try:
-            payload = success_envelope("session-status", read_metadata(session), session_id=session)
+            payload = success_envelope(
+                "session-status", read_metadata(session), session_id=session
+            )
             if json_output:
                 print_json(payload)
             else:
                 typer.echo(payload["result"])
         except Exception as exc:
             if json_output:
-                print_json(error_envelope(
-                    command="session-status",
-                    code=type(exc).__name__.upper(),
-                    message=str(exc),
-                    retryable=False,
-                    session_id=session,
-                ))
+                print_json(
+                    error_envelope(
+                        command="session-status",
+                        code=type(exc).__name__.upper(),
+                        message=str(exc),
+                        retryable=False,
+                        session_id=session,
+                    )
+                )
             else:
                 typer.echo(f"Error: {exc}", err=True)
             raise typer.Exit(1)
 
     @app.command("session-list", help="List known Last.fm daemon sessions.")
-    def session_list(json_output: bool = typer.Option(True, "--json", help="Emit structured JSON.")):
-        payload = success_envelope("session-list", {"sessions": list_sessions()}, session_id=None)
+    def session_list(
+        json_output: bool = typer.Option(True, "--json", help="Emit structured JSON."),
+    ):
+        payload = success_envelope(
+            "session-list", {"sessions": list_sessions()}, session_id=None
+        )
         if json_output:
             print_json(payload)
         else:
@@ -145,20 +255,24 @@ def register(app: typer.Typer) -> None:
                 typer.echo(f"Stopped session {session} with pid {result['pid']}")
         except Exception as exc:
             if json_output:
-                print_json(error_envelope(
-                    command="session-stop",
-                    code=type(exc).__name__.upper(),
-                    message=str(exc),
-                    retryable=False,
-                    session_id=session,
-                ))
+                print_json(
+                    error_envelope(
+                        command="session-stop",
+                        code=type(exc).__name__.upper(),
+                        message=str(exc),
+                        retryable=False,
+                        session_id=session,
+                    )
+                )
             else:
                 typer.echo(f"Error: {exc}", err=True)
             raise typer.Exit(1)
 
     @app.command("session-cleanup", help="Remove files for stopped or stale sessions.")
     def session_cleanup(
-        session: str | None = typer.Option(None, "--session", help="Clean one session ID."),
+        session: str | None = typer.Option(
+            None, "--session", help="Clean one session ID."
+        ),
         json_output: bool = typer.Option(True, "--json", help="Emit structured JSON."),
     ):
         cleaned = []
@@ -195,213 +309,447 @@ def register(app: typer.Typer) -> None:
 
     @app.command("taste-evolution", help=_agent_help("Analyze taste evolution."))
     def taste_evolution(
-        session: str | None = typer.Option(None, "--session", help="Named daemon session ID."),
-        csv: Path | None = typer.Option(None, "--csv", help="Run one-shot against this scrobbles CSV."),
-        start_year: int = typer.Option(2005, "--start-year", help="First year to analyze."),
+        session: str | None = typer.Option(
+            None, "--session", help="Named daemon session ID."
+        ),
+        csv: Path | None = typer.Option(
+            None, "--csv", help="Run one-shot against this scrobbles CSV."
+        ),
+        start_year: int = typer.Option(
+            2005, "--start-year", help="First year to analyze."
+        ),
         end_year: int = typer.Option(2025, "--end-year", help="Last year to analyze."),
-        json_output: bool = typer.Option(True, "--json", help="Emit structured JSON on stdout."),
+        json_output: bool = typer.Option(
+            True, "--json", help="Emit structured JSON on stdout."
+        ),
     ):
-        _run_agent_command("taste-evolution", session, csv, {"start_year": start_year, "end_year": end_year})
+        _run_agent_command(
+            "taste-evolution",
+            session,
+            csv,
+            {"start_year": start_year, "end_year": end_year},
+        )
 
     @app.command("musical-bridges", help=_agent_help("Find musical bridges."))
     def musical_bridges(
-        session: str | None = typer.Option(None, "--session", help="Named daemon session ID."),
-        csv: Path | None = typer.Option(None, "--csv", help="Run one-shot against this scrobbles CSV."),
-        artist: str = typer.Option(..., "--artist", help="Artist name to find bridges from."),
-        top_n: int = typer.Option(10, "--top-n", help="Number of similar artists per source."),
-        json_output: bool = typer.Option(True, "--json", help="Emit structured JSON on stdout."),
+        session: str | None = typer.Option(
+            None, "--session", help="Named daemon session ID."
+        ),
+        csv: Path | None = typer.Option(
+            None, "--csv", help="Run one-shot against this scrobbles CSV."
+        ),
+        artist: str = typer.Option(
+            ..., "--artist", help="Artist name to find bridges from."
+        ),
+        top_n: int = typer.Option(
+            10, "--top-n", help="Number of similar artists per source."
+        ),
+        json_output: bool = typer.Option(
+            True, "--json", help="Emit structured JSON on stdout."
+        ),
     ):
-        _run_agent_command("musical-bridges", session, csv, {"artist": artist, "top_n": top_n})
+        _run_agent_command(
+            "musical-bridges", session, csv, {"artist": artist, "top_n": top_n}
+        )
 
-    @app.command("blind-spots", help=_agent_help("Find critically acclaimed blind spots."))
+    @app.command(
+        "blind-spots", help=_agent_help("Find critically acclaimed blind spots.")
+    )
     def blind_spots(
-        session: str | None = typer.Option(None, "--session", help="Named daemon session ID."),
-        csv: Path | None = typer.Option(None, "--csv", help="Run one-shot against this scrobbles CSV."),
-        year: int | None = typer.Option(None, "--year", help="Optional critics year filter."),
-        min_critics: int = typer.Option(3, "--min-critics", help="Minimum critics who listed the album."),
-        limit: int = typer.Option(20, "--limit", help="Maximum recommendations to return."),
-        json_output: bool = typer.Option(True, "--json", help="Emit structured JSON on stdout."),
+        session: str | None = typer.Option(
+            None, "--session", help="Named daemon session ID."
+        ),
+        csv: Path | None = typer.Option(
+            None, "--csv", help="Run one-shot against this scrobbles CSV."
+        ),
+        year: int | None = typer.Option(
+            None, "--year", help="Optional critics year filter."
+        ),
+        min_critics: int = typer.Option(
+            3, "--min-critics", help="Minimum critics who listed the album."
+        ),
+        limit: int = typer.Option(
+            20, "--limit", help="Maximum recommendations to return."
+        ),
+        json_output: bool = typer.Option(
+            True, "--json", help="Emit structured JSON on stdout."
+        ),
     ):
-        _run_agent_command("blind-spots", session, csv, {"year": year, "min_critics": min_critics, "limit": limit})
+        _run_agent_command(
+            "blind-spots",
+            session,
+            csv,
+            {"year": year, "min_critics": min_critics, "limit": limit},
+        )
 
     @app.command("artist-deep-dive", help=_agent_help("Analyze one or more artists."))
     def artist_deep_dive(
-        session: str | None = typer.Option(None, "--session", help="Named daemon session ID."),
-        csv: Path | None = typer.Option(None, "--csv", help="Run one-shot against this scrobbles CSV."),
-        artists: list[str] = typer.Option(..., "--artist", help="Artist name. Repeat for multiple artists."),
-        json_output: bool = typer.Option(True, "--json", help="Emit structured JSON on stdout."),
+        session: str | None = typer.Option(
+            None, "--session", help="Named daemon session ID."
+        ),
+        csv: Path | None = typer.Option(
+            None, "--csv", help="Run one-shot against this scrobbles CSV."
+        ),
+        artists: list[str] = typer.Option(
+            ..., "--artist", help="Artist name. Repeat for multiple artists."
+        ),
+        json_output: bool = typer.Option(
+            True, "--json", help="Emit structured JSON on stdout."
+        ),
     ):
         _run_agent_command("artist-deep-dive", session, csv, {"artists": artists})
 
     @app.command("similar-artists", help=_agent_help("Find similar artists."))
     def similar_artists(
-        session: str | None = typer.Option(None, "--session", help="Named daemon session ID."),
-        csv: Path | None = typer.Option(None, "--csv", help="Run one-shot against this scrobbles CSV."),
-        artist: str = typer.Option(..., "--artist", help="Artist name to find similar artists for."),
-        source: str = typer.Option("user", "--source", help="Similarity source: user or critics."),
-        top_n: int = typer.Option(10, "--top-n", help="Number of similar artists to return."),
-        json_output: bool = typer.Option(True, "--json", help="Emit structured JSON on stdout."),
+        session: str | None = typer.Option(
+            None, "--session", help="Named daemon session ID."
+        ),
+        csv: Path | None = typer.Option(
+            None, "--csv", help="Run one-shot against this scrobbles CSV."
+        ),
+        artist: str = typer.Option(
+            ..., "--artist", help="Artist name to find similar artists for."
+        ),
+        source: str = typer.Option(
+            "user", "--source", help="Similarity source: user or critics."
+        ),
+        top_n: int = typer.Option(
+            10, "--top-n", help="Number of similar artists to return."
+        ),
+        json_output: bool = typer.Option(
+            True, "--json", help="Emit structured JSON on stdout."
+        ),
     ):
-        _run_agent_command("similar-artists", session, csv, {"artist": artist, "source": source, "top_n": top_n})
+        _run_agent_command(
+            "similar-artists",
+            session,
+            csv,
+            {"artist": artist, "source": source, "top_n": top_n},
+        )
 
     @app.command("listening-stats", help=_agent_help("Return listening statistics."))
     def listening_stats(
-        session: str | None = typer.Option(None, "--session", help="Named daemon session ID."),
-        csv: Path | None = typer.Option(None, "--csv", help="Run one-shot against this scrobbles CSV."),
+        session: str | None = typer.Option(
+            None, "--session", help="Named daemon session ID."
+        ),
+        csv: Path | None = typer.Option(
+            None, "--csv", help="Run one-shot against this scrobbles CSV."
+        ),
         year: int | None = typer.Option(None, "--year", help="Optional year filter."),
-        json_output: bool = typer.Option(True, "--json", help="Emit structured JSON on stdout."),
+        json_output: bool = typer.Option(
+            True, "--json", help="Emit structured JSON on stdout."
+        ),
     ):
         _run_agent_command("listening-stats", session, csv, {"year": year})
 
     @app.command("top-artists", help=_agent_help("Return top artists."))
     def top_artists(
-        session: str | None = typer.Option(None, "--session", help="Named daemon session ID."),
-        csv: Path | None = typer.Option(None, "--csv", help="Run one-shot against this scrobbles CSV."),
+        session: str | None = typer.Option(
+            None, "--session", help="Named daemon session ID."
+        ),
+        csv: Path | None = typer.Option(
+            None, "--csv", help="Run one-shot against this scrobbles CSV."
+        ),
         year: int | None = typer.Option(None, "--year", help="Optional year filter."),
         limit: int = typer.Option(20, "--limit", help="Maximum artists to return."),
-        json_output: bool = typer.Option(True, "--json", help="Emit structured JSON on stdout."),
+        json_output: bool = typer.Option(
+            True, "--json", help="Emit structured JSON on stdout."
+        ),
     ):
         _run_agent_command("top-artists", session, csv, {"year": year, "limit": limit})
 
     @app.command("critic-alignment", help=_agent_help("Find aligned critics."))
     def critic_alignment(
-        session: str | None = typer.Option(None, "--session", help="Named daemon session ID."),
-        csv: Path | None = typer.Option(None, "--csv", help="Run one-shot against this scrobbles CSV."),
+        session: str | None = typer.Option(
+            None, "--session", help="Named daemon session ID."
+        ),
+        csv: Path | None = typer.Option(
+            None, "--csv", help="Run one-shot against this scrobbles CSV."
+        ),
         limit: int = typer.Option(20, "--limit", help="Number of critics to return."),
-        json_output: bool = typer.Option(True, "--json", help="Emit structured JSON on stdout."),
+        json_output: bool = typer.Option(
+            True, "--json", help="Emit structured JSON on stdout."
+        ),
     ):
         _run_agent_command("critic-alignment", session, csv, {"limit": limit})
 
-    @app.command("temporal-patterns", help=_agent_help("Analyze temporal listening patterns."))
+    @app.command(
+        "temporal-patterns", help=_agent_help("Analyze temporal listening patterns.")
+    )
     def temporal_patterns(
-        session: str | None = typer.Option(None, "--session", help="Named daemon session ID."),
-        csv: Path | None = typer.Option(None, "--csv", help="Run one-shot against this scrobbles CSV."),
+        session: str | None = typer.Option(
+            None, "--session", help="Named daemon session ID."
+        ),
+        csv: Path | None = typer.Option(
+            None, "--csv", help="Run one-shot against this scrobbles CSV."
+        ),
         year: int | None = typer.Option(None, "--year", help="Optional year filter."),
-        json_output: bool = typer.Option(True, "--json", help="Emit structured JSON on stdout."),
+        json_output: bool = typer.Option(
+            True, "--json", help="Emit structured JSON on stdout."
+        ),
     ):
         _run_agent_command("temporal-patterns", session, csv, {"year": year})
 
     @app.command("period-summary", help=_agent_help("Summarize a listening period."))
     def period_summary(
-        session: str | None = typer.Option(None, "--session", help="Named daemon session ID."),
-        csv: Path | None = typer.Option(None, "--csv", help="Run one-shot against this scrobbles CSV."),
-        start_year: int = typer.Option(..., "--start-year", help="First year of the period."),
-        end_year: int = typer.Option(..., "--end-year", help="Last year of the period."),
-        json_output: bool = typer.Option(True, "--json", help="Emit structured JSON on stdout."),
+        session: str | None = typer.Option(
+            None, "--session", help="Named daemon session ID."
+        ),
+        csv: Path | None = typer.Option(
+            None, "--csv", help="Run one-shot against this scrobbles CSV."
+        ),
+        start_year: int = typer.Option(
+            ..., "--start-year", help="First year of the period."
+        ),
+        end_year: int = typer.Option(
+            ..., "--end-year", help="Last year of the period."
+        ),
+        json_output: bool = typer.Option(
+            True, "--json", help="Emit structured JSON on stdout."
+        ),
     ):
-        _run_agent_command("period-summary", session, csv, {"start_year": start_year, "end_year": end_year})
+        _run_agent_command(
+            "period-summary",
+            session,
+            csv,
+            {"start_year": start_year, "end_year": end_year},
+        )
 
     @app.command("year-review", help=_agent_help("Generate year review data."))
     def year_review(
-        session: str | None = typer.Option(None, "--session", help="Named daemon session ID."),
-        csv: Path | None = typer.Option(None, "--csv", help="Run one-shot against this scrobbles CSV."),
-        years: list[int] = typer.Option([2025], "--year", help="Year to review. Repeat for multiple years."),
-        json_output: bool = typer.Option(True, "--json", help="Emit structured JSON on stdout."),
+        session: str | None = typer.Option(
+            None, "--session", help="Named daemon session ID."
+        ),
+        csv: Path | None = typer.Option(
+            None, "--csv", help="Run one-shot against this scrobbles CSV."
+        ),
+        years: list[int] = typer.Option(
+            [2025], "--year", help="Year to review. Repeat for multiple years."
+        ),
+        json_output: bool = typer.Option(
+            True, "--json", help="Emit structured JSON on stdout."
+        ),
     ):
         _run_agent_command("year-review", session, csv, {"years": years})
 
-    @app.command("listening-by-release-era", help=_agent_help("Analyze listening by release era."))
+    @app.command(
+        "listening-by-release-era",
+        help=_agent_help("Analyze listening by release era."),
+    )
     def listening_by_release_era(
-        session: str | None = typer.Option(None, "--session", help="Named daemon session ID."),
-        csv: Path | None = typer.Option(None, "--csv", help="Run one-shot against this scrobbles CSV."),
-        release_start: int = typer.Option(..., "--release-start", help="First release year to include."),
-        release_end: int = typer.Option(..., "--release-end", help="Last release year to include."),
+        session: str | None = typer.Option(
+            None, "--session", help="Named daemon session ID."
+        ),
+        csv: Path | None = typer.Option(
+            None, "--csv", help="Run one-shot against this scrobbles CSV."
+        ),
+        release_start: int = typer.Option(
+            ..., "--release-start", help="First release year to include."
+        ),
+        release_end: int = typer.Option(
+            ..., "--release-end", help="Last release year to include."
+        ),
         limit: int = typer.Option(50, "--limit", help="Maximum albums to return."),
-        json_output: bool = typer.Option(True, "--json", help="Emit structured JSON on stdout."),
+        json_output: bool = typer.Option(
+            True, "--json", help="Emit structured JSON on stdout."
+        ),
     ):
         _run_agent_command(
             "listening-by-release-era",
             session,
             csv,
-            {"release_start": release_start, "release_end": release_end, "limit": limit},
+            {
+                "release_start": release_start,
+                "release_end": release_end,
+                "limit": limit,
+            },
         )
 
-    @app.command("common-transitions", help=_agent_help("Find common artist transitions."))
+    @app.command(
+        "common-transitions", help=_agent_help("Find common artist transitions.")
+    )
     def common_transitions(
-        session: str | None = typer.Option(None, "--session", help="Named daemon session ID."),
-        csv: Path | None = typer.Option(None, "--csv", help="Run one-shot against this scrobbles CSV."),
-        artist: str = typer.Option(..., "--artist", help="Artist to analyze transitions for."),
-        top_n: int = typer.Option(10, "--top-n", help="Number of top transitions to return."),
-        json_output: bool = typer.Option(True, "--json", help="Emit structured JSON on stdout."),
+        session: str | None = typer.Option(
+            None, "--session", help="Named daemon session ID."
+        ),
+        csv: Path | None = typer.Option(
+            None, "--csv", help="Run one-shot against this scrobbles CSV."
+        ),
+        artist: str = typer.Option(
+            ..., "--artist", help="Artist to analyze transitions for."
+        ),
+        top_n: int = typer.Option(
+            10, "--top-n", help="Number of top transitions to return."
+        ),
+        json_output: bool = typer.Option(
+            True, "--json", help="Emit structured JSON on stdout."
+        ),
     ):
-        _run_agent_command("common-transitions", session, csv, {"artist": artist, "top_n": top_n})
+        _run_agent_command(
+            "common-transitions", session, csv, {"artist": artist, "top_n": top_n}
+        )
 
-    @app.command("discovery-context", help=_agent_help("Analyze artist discovery context."))
+    @app.command(
+        "discovery-context", help=_agent_help("Analyze artist discovery context.")
+    )
     def discovery_context(
-        session: str | None = typer.Option(None, "--session", help="Named daemon session ID."),
-        csv: Path | None = typer.Option(None, "--csv", help="Run one-shot against this scrobbles CSV."),
-        artist: str = typer.Option(..., "--artist", help="Artist to get discovery context for."),
-        json_output: bool = typer.Option(True, "--json", help="Emit structured JSON on stdout."),
+        session: str | None = typer.Option(
+            None, "--session", help="Named daemon session ID."
+        ),
+        csv: Path | None = typer.Option(
+            None, "--csv", help="Run one-shot against this scrobbles CSV."
+        ),
+        artist: str = typer.Option(
+            ..., "--artist", help="Artist to get discovery context for."
+        ),
+        json_output: bool = typer.Option(
+            True, "--json", help="Emit structured JSON on stdout."
+        ),
     ):
         _run_agent_command("discovery-context", session, csv, {"artist": artist})
 
     @app.command("critics-world", help=_agent_help("Explore critics world."))
     def critics_world(
-        session: str | None = typer.Option(None, "--session", help="Named daemon session ID."),
-        csv: Path | None = typer.Option(None, "--csv", help="Run one-shot against this scrobbles CSV."),
-        year: int | None = typer.Option(None, "--year", help="Optional critics year filter."),
-        json_output: bool = typer.Option(True, "--json", help="Emit structured JSON on stdout."),
+        session: str | None = typer.Option(
+            None, "--session", help="Named daemon session ID."
+        ),
+        csv: Path | None = typer.Option(
+            None, "--csv", help="Run one-shot against this scrobbles CSV."
+        ),
+        year: int | None = typer.Option(
+            None, "--year", help="Optional critics year filter."
+        ),
+        json_output: bool = typer.Option(
+            True, "--json", help="Emit structured JSON on stdout."
+        ),
     ):
         _run_agent_command("critics-world", session, csv, {"year": year})
 
-    @app.command("album-acclaim", help=_agent_help("Analyze an album's critical acclaim."))
+    @app.command(
+        "album-acclaim", help=_agent_help("Analyze an album's critical acclaim.")
+    )
     def album_acclaim(
-        session: str | None = typer.Option(None, "--session", help="Named daemon session ID."),
-        csv: Path | None = typer.Option(None, "--csv", help="Run one-shot against this scrobbles CSV."),
+        session: str | None = typer.Option(
+            None, "--session", help="Named daemon session ID."
+        ),
+        csv: Path | None = typer.Option(
+            None, "--csv", help="Run one-shot against this scrobbles CSV."
+        ),
         artist: str = typer.Option(..., "--artist", help="Artist name."),
         album: str = typer.Option(..., "--album", help="Album name."),
-        year: int | None = typer.Option(None, "--year", help="Optional critics year filter."),
-        json_output: bool = typer.Option(True, "--json", help="Emit structured JSON on stdout."),
+        year: int | None = typer.Option(
+            None, "--year", help="Optional critics year filter."
+        ),
+        json_output: bool = typer.Option(
+            True, "--json", help="Emit structured JSON on stdout."
+        ),
     ):
-        _run_agent_command("album-acclaim", session, csv, {"artist": artist, "album": album, "year": year})
+        _run_agent_command(
+            "album-acclaim",
+            session,
+            csv,
+            {"artist": artist, "album": album, "year": year},
+        )
 
-    @app.command("validated-albums", help=_agent_help("Find albums validated by critics."))
+    @app.command(
+        "validated-albums", help=_agent_help("Find albums validated by critics.")
+    )
     def validated_albums(
-        session: str | None = typer.Option(None, "--session", help="Named daemon session ID."),
-        csv: Path | None = typer.Option(None, "--csv", help="Run one-shot against this scrobbles CSV."),
-        year: int | None = typer.Option(None, "--year", help="Optional critics year filter."),
+        session: str | None = typer.Option(
+            None, "--session", help="Named daemon session ID."
+        ),
+        csv: Path | None = typer.Option(
+            None, "--csv", help="Run one-shot against this scrobbles CSV."
+        ),
+        year: int | None = typer.Option(
+            None, "--year", help="Optional critics year filter."
+        ),
         limit: int = typer.Option(50, "--limit", help="Maximum albums to return."),
-        json_output: bool = typer.Option(True, "--json", help="Emit structured JSON on stdout."),
+        json_output: bool = typer.Option(
+            True, "--json", help="Emit structured JSON on stdout."
+        ),
     ):
-        _run_agent_command("validated-albums", session, csv, {"year": year, "limit": limit})
+        _run_agent_command(
+            "validated-albums", session, csv, {"year": year, "limit": limit}
+        )
 
     @app.command("critic-profile", help=_agent_help("Analyze a critic profile."))
     def critic_profile(
-        session: str | None = typer.Option(None, "--session", help="Named daemon session ID."),
-        csv: Path | None = typer.Option(None, "--csv", help="Run one-shot against this scrobbles CSV."),
-        critic_name: str = typer.Option(..., "--critic-name", help="Name of the critic to analyze."),
+        session: str | None = typer.Option(
+            None, "--session", help="Named daemon session ID."
+        ),
+        csv: Path | None = typer.Option(
+            None, "--csv", help="Run one-shot against this scrobbles CSV."
+        ),
+        critic_name: str = typer.Option(
+            ..., "--critic-name", help="Name of the critic to analyze."
+        ),
         year: int | None = typer.Option(None, "--year", help="Optional year filter."),
-        json_output: bool = typer.Option(True, "--json", help="Emit structured JSON on stdout."),
+        json_output: bool = typer.Option(
+            True, "--json", help="Emit structured JSON on stdout."
+        ),
     ):
-        _run_agent_command("critic-profile", session, csv, {"critic_name": critic_name, "year": year})
+        _run_agent_command(
+            "critic-profile", session, csv, {"critic_name": critic_name, "year": year}
+        )
 
-    @app.command("search-critics-artist", help=_agent_help("Search critics lists for an artist."))
+    @app.command(
+        "search-critics-artist", help=_agent_help("Search critics lists for an artist.")
+    )
     def search_critics_artist(
-        session: str | None = typer.Option(None, "--session", help="Named daemon session ID."),
-        csv: Path | None = typer.Option(None, "--csv", help="Run one-shot against this scrobbles CSV."),
+        session: str | None = typer.Option(
+            None, "--session", help="Named daemon session ID."
+        ),
+        csv: Path | None = typer.Option(
+            None, "--csv", help="Run one-shot against this scrobbles CSV."
+        ),
         artist: str = typer.Option(..., "--artist", help="Artist name to search for."),
         year: int | None = typer.Option(None, "--year", help="Optional year filter."),
-        json_output: bool = typer.Option(True, "--json", help="Emit structured JSON on stdout."),
+        json_output: bool = typer.Option(
+            True, "--json", help="Emit structured JSON on stdout."
+        ),
     ):
-        _run_agent_command("search-critics-artist", session, csv, {"artist": artist, "year": year})
+        _run_agent_command(
+            "search-critics-artist", session, csv, {"artist": artist, "year": year}
+        )
 
     @app.command("obsession-tracks", help=_agent_help("Find track obsessions."))
     def obsession_tracks(
-        session: str | None = typer.Option(None, "--session", help="Named daemon session ID."),
-        csv: Path | None = typer.Option(None, "--csv", help="Run one-shot against this scrobbles CSV."),
+        session: str | None = typer.Option(
+            None, "--session", help="Named daemon session ID."
+        ),
+        csv: Path | None = typer.Option(
+            None, "--csv", help="Run one-shot against this scrobbles CSV."
+        ),
         year: int | None = typer.Option(None, "--year", help="Optional year filter."),
-        min_plays: int = typer.Option(20, "--min-plays", help="Minimum plays for a track to be considered."),
-        json_output: bool = typer.Option(True, "--json", help="Emit structured JSON on stdout."),
+        min_plays: int = typer.Option(
+            20, "--min-plays", help="Minimum plays for a track to be considered."
+        ),
+        json_output: bool = typer.Option(
+            True, "--json", help="Emit structured JSON on stdout."
+        ),
     ):
-        _run_agent_command("obsession-tracks", session, csv, {"year": year, "min_plays": min_plays})
+        _run_agent_command(
+            "obsession-tracks", session, csv, {"year": year, "min_plays": min_plays}
+        )
 
-    @app.command("one-track-artists", help=_agent_help("Find one-track artist relationships."))
+    @app.command(
+        "one-track-artists", help=_agent_help("Find one-track artist relationships.")
+    )
     def one_track_artists(
-        session: str | None = typer.Option(None, "--session", help="Named daemon session ID."),
-        csv: Path | None = typer.Option(None, "--csv", help="Run one-shot against this scrobbles CSV."),
+        session: str | None = typer.Option(
+            None, "--session", help="Named daemon session ID."
+        ),
+        csv: Path | None = typer.Option(
+            None, "--csv", help="Run one-shot against this scrobbles CSV."
+        ),
         year: int | None = typer.Option(None, "--year", help="Optional year filter."),
-        min_concentration: float = typer.Option(0.7, "--min-concentration", help="Minimum share of plays on top track."),
-        json_output: bool = typer.Option(True, "--json", help="Emit structured JSON on stdout."),
+        min_concentration: float = typer.Option(
+            0.7, "--min-concentration", help="Minimum share of plays on top track."
+        ),
+        json_output: bool = typer.Option(
+            True, "--json", help="Emit structured JSON on stdout."
+        ),
     ):
         _run_agent_command(
             "one-track-artists",
@@ -412,35 +760,59 @@ def register(app: typer.Typer) -> None:
 
     @app.command("ep-single-artists", help=_agent_help("Find EP/single-heavy artists."))
     def ep_single_artists(
-        session: str | None = typer.Option(None, "--session", help="Named daemon session ID."),
-        csv: Path | None = typer.Option(None, "--csv", help="Run one-shot against this scrobbles CSV."),
+        session: str | None = typer.Option(
+            None, "--session", help="Named daemon session ID."
+        ),
+        csv: Path | None = typer.Option(
+            None, "--csv", help="Run one-shot against this scrobbles CSV."
+        ),
         year: int | None = typer.Option(None, "--year", help="Optional year filter."),
-        json_output: bool = typer.Option(True, "--json", help="Emit structured JSON on stdout."),
+        json_output: bool = typer.Option(
+            True, "--json", help="Emit structured JSON on stdout."
+        ),
     ):
         _run_agent_command("ep-single-artists", session, csv, {"year": year})
 
     @app.command("overview-summary", help=_agent_help("Return overview summary."))
     def overview_summary(
-        session: str | None = typer.Option(None, "--session", help="Named daemon session ID."),
-        csv: Path | None = typer.Option(None, "--csv", help="Run one-shot against this scrobbles CSV."),
-        json_output: bool = typer.Option(True, "--json", help="Emit structured JSON on stdout."),
+        session: str | None = typer.Option(
+            None, "--session", help="Named daemon session ID."
+        ),
+        csv: Path | None = typer.Option(
+            None, "--csv", help="Run one-shot against this scrobbles CSV."
+        ),
+        json_output: bool = typer.Option(
+            True, "--json", help="Emit structured JSON on stdout."
+        ),
     ):
         _run_agent_command("overview-summary", session, csv, {})
 
     @app.command("discovered-artists", help=_agent_help("List discovered artists."))
     def discovered_artists(
-        session: str | None = typer.Option(None, "--session", help="Named daemon session ID."),
-        csv: Path | None = typer.Option(None, "--csv", help="Run one-shot against this scrobbles CSV."),
+        session: str | None = typer.Option(
+            None, "--session", help="Named daemon session ID."
+        ),
+        csv: Path | None = typer.Option(
+            None, "--csv", help="Run one-shot against this scrobbles CSV."
+        ),
         year: int = typer.Option(..., "--year", help="Discovery year."),
-        json_output: bool = typer.Option(True, "--json", help="Emit structured JSON on stdout."),
+        json_output: bool = typer.Option(
+            True, "--json", help="Emit structured JSON on stdout."
+        ),
     ):
         _run_agent_command("discovered-artists", session, csv, {"year": year})
 
     @app.command("critics-lists", help=_agent_help("List critics for a year."))
     def critics_lists(
-        session: str | None = typer.Option(None, "--session", help="Named daemon session ID."),
-        csv: Path | None = typer.Option(None, "--csv", help="Run one-shot against this scrobbles CSV."),
+        session: str | None = typer.Option(
+            None, "--session", help="Named daemon session ID."
+        ),
+        csv: Path | None = typer.Option(
+            None, "--csv", help="Run one-shot against this scrobbles CSV."
+        ),
         year: int = typer.Option(..., "--year", help="Critics list year."),
-        json_output: bool = typer.Option(True, "--json", help="Emit structured JSON on stdout."),
+        json_output: bool = typer.Option(
+            True, "--json", help="Emit structured JSON on stdout."
+        ),
     ):
         _run_agent_command("critics-lists", session, csv, {"year": year})
