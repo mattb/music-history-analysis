@@ -12,7 +12,7 @@ from typing import Any
 
 import typer
 
-from . import agent_tools, analysis_state
+from . import agent_tools, analysis_state, data
 from .agent_output import error_envelope, print_json, success_envelope
 from .session_client import (
     dispatch_to_session,
@@ -45,21 +45,32 @@ def _agent_help(first_sentence: str) -> str:
 
 
 # fmt: off
-def _resolve_target(session: str | None, csv: Path | None) -> tuple[str | None, analysis_state.AnalysisState | None]:
+def _resolve_target(
+    session: str | None,
+    csv: Path | None,
+    *,
+    lightweight: bool = False,
+) -> tuple[str | None, analysis_state.AnalysisState | None]:
     if bool(session) == bool(csv):
         raise typer.BadParameter("Provide exactly one of --session or --csv")
     if session:
         return session, None
 
     state = analysis_state.AnalysisState()
-    state.load(csv)
+    if lightweight:
+        state.csv_path = csv
+        state.df = data.load_scrobbles(csv)
+    else:
+        state.load(csv)
     return None, state
 
 
 def _run_agent_command(command: str, session: str | None, csv: Path | None, params: dict[str, Any]) -> None:
     try:
         with redirect_stdout(StringIO()):
-            session_id, state = _resolve_target(session, csv)
+            session_id, state = _resolve_target(
+                session, csv, lightweight=command == "life-event-window"
+            )
             if session_id:
                 result = dispatch_to_session(session_id, command, params)
             else:
@@ -96,6 +107,57 @@ def register(app: typer.Typer) -> None:
                 )
         if start is not None and end is not None and start > end:
             raise typer.BadParameter("start must not exceed end", param_hint="--start")
+
+    @app.command(
+        "life-event-window",
+        help=_agent_help("Measure listening around a user-supplied life-event date."),
+    )
+    def life_event_window(
+        session: str | None = typer.Option(
+            None, "--session", help="Named daemon session ID."
+        ),
+        csv: Path | None = typer.Option(
+            None, "--csv", help="Run one-shot against this scrobbles CSV."
+        ),
+        event_date: str = typer.Option(
+            ..., "--event-date", help="Local event date in YYYY-MM-DD format."
+        ),
+        timezone: str = typer.Option(
+            "UTC", "--timezone", help="IANA timezone for local-calendar windows."
+        ),
+        pre_days: int = typer.Option(28, "--pre-days", help="Days before the event."),
+        event_days: int = typer.Option(
+            1, "--event-days", help="Days in the event window."
+        ),
+        post_days: int = typer.Option(28, "--post-days", help="Days after the event."),
+        baseline_days: int = typer.Option(
+            84, "--baseline-days", help="Days in each before/after baseline."
+        ),
+        entity: str = typer.Option(
+            "artist", "--entity", help="Entity grouping: artist, album, or track."
+        ),
+        top_n: int = typer.Option(
+            50, "--top-n", help="Top entities retained from each comparison period."
+        ),
+        _json_output: bool = typer.Option(
+            True, "--json", help="Emit structured JSON on stdout."
+        ),
+    ):
+        _run_agent_command(
+            "life-event-window",
+            session,
+            csv,
+            {
+                "event_date": event_date,
+                "timezone": timezone,
+                "pre_days": pre_days,
+                "event_days": event_days,
+                "post_days": post_days,
+                "baseline_days": baseline_days,
+                "entity": entity,
+                "top_n": top_n,
+            },
+        )
 
     @app.command(
         "artist-trajectories",

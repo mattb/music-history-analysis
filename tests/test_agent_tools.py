@@ -1,5 +1,6 @@
 from lastfm.agent_tools import (
     dispatch,
+    get_life_event_window,
     get_artist_cohort_retention,
     get_artist_trajectories,
     get_listening_stats,
@@ -88,4 +89,31 @@ def test_trajectory_agent_tools_are_thin_dataframe_wrappers(monkeypatch, sample_
     assert retention["parameters"]["offsets"] == [0, 1]
     assert (
         dispatch(state, "artist-trajectories", {"artists": ["Artist A"]})["count"] == 1
+    )
+
+
+def test_life_event_window_wrapper_and_dispatch(monkeypatch, sample_csv):
+    state = loaded_lightweight_state(monkeypatch, sample_csv)
+    result = get_life_event_window(
+        state,
+        event_date="2024-01-02",
+        pre_days=1,
+        event_days=1,
+        post_days=1,
+        baseline_days=1,
+    )
+    assert result["event_date"] == "2024-01-02"
+    assert (
+        dispatch(
+            state,
+            "life-event-window",
+            {
+                "event_date": "2024-01-02",
+                "pre_days": 1,
+                "event_days": 1,
+                "post_days": 1,
+                "baseline_days": 1,
+            },
+        )["schema_version"]
+        == 1
     )

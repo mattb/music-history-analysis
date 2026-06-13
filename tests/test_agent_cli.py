@@ -76,10 +76,87 @@ def test_all_agent_commands_are_registered_in_help():
         "listening-graph",
         "artist-trajectories",
         "artist-cohort-retention",
+        "life-event-window",
     ]
     output = runner.invoke(app, ["--help"]).output
     for command in expected:
         assert command in output
+
+
+def test_life_event_window_one_shot_is_json_and_does_not_build_embeddings(
+    monkeypatch, sample_csv
+):
+    import lastfm.analysis_state
+
+    def forbidden(*_args, **_kwargs):
+        raise AssertionError("life-event-window must not build embeddings")
+
+    monkeypatch.setattr(
+        lastfm.analysis_state.AnalysisState, "_build_user_embeddings", forbidden
+    )
+    monkeypatch.setattr(
+        lastfm.analysis_state.AnalysisState, "_build_critics_embeddings", forbidden
+    )
+    monkeypatch.setattr(
+        lastfm.analysis_state.AnalysisState, "_build_critic_vectors", forbidden
+    )
+    result = runner.invoke(
+        app,
+        [
+            "life-event-window",
+            "--csv",
+            str(sample_csv),
+            "--event-date",
+            "2024-01-02",
+            "--pre-days",
+            "1",
+            "--event-days",
+            "1",
+            "--post-days",
+            "1",
+            "--baseline-days",
+            "1",
+            "--json",
+        ],
+    )
+    assert result.exit_code == 0, result.output
+    payload = json.loads(result.output)
+    assert payload["command"] == "life-event-window"
+    assert payload["result"]["periods"]["event"]["plays"] == 1
+    assert "NaN" not in result.output
+
+
+def test_life_event_window_session_forwards_all_parameters(monkeypatch):
+    captured = {}
+
+    def fake_dispatch(session, command, params):
+        captured.update(session=session, command=command, params=params)
+        return {"schema_version": 1}
+
+    monkeypatch.setattr("lastfm.commands_agent.dispatch_to_session", fake_dispatch)
+    result = runner.invoke(
+        app,
+        [
+            "life-event-window",
+            "--session",
+            "diary",
+            "--event-date",
+            "2024-01-02",
+            "--timezone",
+            "Europe/London",
+            "--entity",
+            "album",
+            "--top-n",
+            "7",
+            "--json",
+        ],
+    )
+    assert result.exit_code == 0
+    assert captured["session"] == "diary"
+    assert captured["command"] == "life-event-window"
+    assert captured["params"]["timezone"] == "Europe/London"
+    assert captured["params"]["entity"] == "album"
+    assert captured["params"]["top_n"] == 7
 
 
 def test_listening_stats_help_documents_output_contract():

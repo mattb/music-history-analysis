@@ -70,3 +70,11 @@ Do not compare centrality values from graphs built with different filters as tho
 Use artist trajectories and cohort retention as analytics measurements only. A dormant interval or return records a pattern in observed scrobbles; it does not explain why listening stopped or resumed. Treat trailing inactivity as censored, never as completed dormancy or abandonment.
 
 A journalist may call an artist relationship “enduring” only by citing the relevant span, active-period share, dormant intervals, returns, and recent activity. State the observation window and thresholds, and keep evidence separate from interpretation.
+
+## Life-Event Evidence
+
+Use `life-event-window` only after the user supplies the event date and relevant timezone. Inspect coverage before comparing periods. Distinguish a zero-play covered interval from an interval outside the source history.
+
+Lead with measured counts, rates, shares, deltas, and baseline residuals. These measurements do not establish that the event caused a change. Treat a large residual as evidence for closer inspection, not as an emotional or biographical conclusion.
+
+Check artist, album, and track groupings when the question warrants them. Report the pre, event, and post window lengths; the baseline length; the timezone; and any clipped coverage. Keep interpretation in this journalism layer: the analytics layer should contain measurements and coverage facts only.

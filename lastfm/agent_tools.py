@@ -4,11 +4,19 @@ from __future__ import annotations
 
 import sqlite3
 from collections import defaultdict
+from datetime import date
 from typing import Any, Optional
 
 import pandas as pd
 
-from . import crossref, data, listening_graph, musicbrainz_db, trajectories
+from . import (
+    crossref,
+    data,
+    event_windows,
+    listening_graph,
+    musicbrainz_db,
+    trajectories,
+)
 from .analysis_state import AnalysisState, to_serializable
 
 COMMANDS = {
@@ -40,6 +48,7 @@ COMMANDS = {
     "listening-graph": "get_listening_graph",
     "artist-trajectories": "get_artist_trajectories",
     "artist-cohort-retention": "get_artist_cohort_retention",
+    "life-event-window": "get_life_event_window",
 }
 
 
@@ -126,6 +135,31 @@ def get_artist_cohort_retention(
         min_active_plays=min_active_plays,
         offsets=(1, 3, 6, 12, 24) if offsets is None else offsets,
     )
+
+
+def get_life_event_window(
+    state: AnalysisState,
+    event_date: str,
+    timezone: str = "UTC",
+    pre_days: int = 28,
+    event_days: int = 1,
+    post_days: int = 28,
+    baseline_days: int = 84,
+    entity: str = "artist",
+    top_n: int = 50,
+) -> dict[str, Any]:
+    """Return event-window measurements without editorial interpretation."""
+    spec = event_windows.EventWindowSpec(
+        event_date=date.fromisoformat(event_date),
+        timezone=timezone,
+        pre_days=pre_days,
+        event_days=event_days,
+        post_days=post_days,
+        baseline_days=baseline_days,
+        entity=entity,
+        top_n=top_n,
+    )
+    return event_windows.compare_event_window(state.df, spec)
 
 
 # Legacy commands below predate Ruff formatting. Keep trajectory adapter changes scoped.
