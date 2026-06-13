@@ -865,6 +865,27 @@ def test_real_server_start_failure_reports_before_cleanup_lock_and_reaps_child(
     assert elapsed < 7
     assert len(children) == 1
     assert children[0].poll() is not None
+    paths = session_paths("overlong")
+    assert not paths.pid.exists()
+    assert not paths.socket.exists()
+    assert paths.metadata.exists()
+
+
+def test_failed_child_runtime_cleanup_preserves_foreign_pid_and_socket(
+    tmp_path, monkeypatch
+):
+    monkeypatch.setenv("LASTFM_SESSION_ROOT", str(tmp_path))
+    paths = session_paths("successor")
+    paths.root.mkdir(parents=True)
+    paths.pid.write_text("222")
+    paths.socket.write_text("successor")
+    paths.metadata.write_text('{"session_id":"successor"}')
+
+    session_client._remove_started_process_runtime_files("successor", 111)
+
+    assert paths.pid.read_text() == "222"
+    assert paths.socket.read_text() == "successor"
+    assert paths.metadata.exists()
 
 
 def test_start_session_refuses_existing_reachable_session(tmp_path, monkeypatch):

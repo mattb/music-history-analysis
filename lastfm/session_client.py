@@ -238,6 +238,9 @@ def _start_session_until_ready(
                 break
     except BaseException:
         _terminate_started_process(process)
+        process_pid = getattr(process, "pid", None)
+        if isinstance(process_pid, int):
+            _remove_started_process_runtime_files(session_id, process_pid)
         raise
     finally:
         close_startup_lines = getattr(startup_lines, "close", None)
@@ -298,6 +301,23 @@ def _terminate_started_process(process: subprocess.Popen) -> None:
     except subprocess.TimeoutExpired:
         process.kill()
         process.wait()
+
+
+def _remove_started_process_runtime_files(session_id: str, pid: int) -> None:
+    """Remove failed-child runtime files while the caller holds the lifecycle lock."""
+    paths = session_paths(session_id)
+    try:
+        recorded_pid = int(paths.pid.read_text())
+    except (FileNotFoundError, OSError, ValueError):
+        return
+    if recorded_pid != pid:
+        return
+
+    for path in (paths.pid, paths.socket):
+        try:
+            path.unlink()
+        except FileNotFoundError:
+            pass
 
 
 def stop_session(session_id: str) -> dict[str, Any]:
