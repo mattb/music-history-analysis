@@ -1,5 +1,6 @@
 import io
 import json
+import socket
 import shutil
 import tempfile
 import threading
@@ -15,7 +16,7 @@ from lastfm.session_daemon import (
     IdleTracker,
     UnixAgentServer,
 )
-from lastfm.session_client import SessionPaths
+from lastfm.session_client import SessionPaths, socket_is_connectable
 
 
 class FakeClock:
@@ -164,6 +165,63 @@ def test_unix_agent_server_preserves_original_constructor(socket_path):
         assert isinstance(server.idle_tracker, IdleTracker)
     finally:
         server.server_close()
+
+
+def test_liveness_probe_does_not_reset_idle_activity_but_request_does(
+    socket_path, monkeypatch
+):
+    clock = FakeClock()
+    handled = threading.Event()
+    handler_errors = []
+
+    class ObservableHandler(AgentRequestHandler):
+        def handle(self):
+            try:
+                super().handle()
+            finally:
+                handled.set()
+
+    server = UnixAgentServer(
+        str(socket_path),
+        ObservableHandler,
+        object(),
+        "test-session",
+        idle_timeout_seconds=5,
+        clock=clock,
+    )
+    server.handle_error = lambda *_args: handler_errors.append("handler error")
+    server_thread = threading.Thread(target=server.serve_forever)
+    server_thread.start()
+    monkeypatch.setattr(
+        session_daemon.agent_tools,
+        "dispatch",
+        lambda *_args: {"value": "ok"},
+    )
+
+    try:
+        clock.advance(5)
+        assert socket_is_connectable(socket_path)
+        assert handled.wait(timeout=1)
+        assert server.idle_tracker.last_activity == 0
+        assert server.idle_tracker.is_expired()
+        assert handler_errors == []
+
+        handled.clear()
+        clock.advance(1)
+        with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as client:
+            client.connect(str(socket_path))
+            client.sendall(b'{"command": "status"}\n')
+            response = json.loads(client.recv(65536))
+
+        assert handled.wait(timeout=1)
+        assert response["ok"] is True
+        assert server.idle_tracker.last_activity == 6
+        assert not server.idle_tracker.is_expired()
+        assert handler_errors == []
+    finally:
+        server.shutdown()
+        server.server_close()
+        server_thread.join(timeout=1)
 
 
 def test_idle_watchdog_shuts_down_server_and_exits(socket_path):

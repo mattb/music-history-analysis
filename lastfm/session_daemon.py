@@ -51,9 +51,13 @@ class IdleTracker:
 
 class AgentRequestHandler(socketserver.StreamRequestHandler):
     def handle(self) -> None:
+        raw_bytes = self.rfile.readline()
+        if not raw_bytes:
+            return
+
         self.server.idle_tracker.request_started()
         try:
-            raw = self.rfile.readline().decode()
+            raw = raw_bytes.decode()
             request = json.loads(raw)
             command = request["command"]
             params = request.get("params", {})
