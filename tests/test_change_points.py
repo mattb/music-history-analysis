@@ -1,4 +1,6 @@
 import json
+import inspect
+import itertools
 
 import numpy as np
 import pandas as pd
@@ -161,6 +163,52 @@ def test_dp_ties_choose_fewer_then_lexicographically_earliest_boundaries():
     alternating = np.array([[0.0], [0.0], [1.0], [1.0], [0.0], [0.0]])
     boundaries, _ = optimal_partition(alternating, penalty=-0.5, min_segment_bins=2)
     assert boundaries == [2, 4]
+
+
+def _exhaustive_partition(matrix, penalty, minimum):
+    n = len(matrix)
+    cost = PrefixSSE(matrix)
+    candidates = []
+    for size in range(n):
+        for boundaries in itertools.combinations(range(1, n), size):
+            edges = (0, *boundaries, n)
+            if any(right - left < minimum for left, right in zip(edges, edges[1:])):
+                continue
+            objective = (
+                sum(cost.cost(left, right) for left, right in zip(edges, edges[1:]))
+                + penalty * size
+            )
+            candidates.append((objective, boundaries))
+    best_value = min(value for value, _ in candidates)
+    tied = [
+        boundaries
+        for value, boundaries in candidates
+        if abs(value - best_value) <= 1e-12
+    ]
+    best_boundaries = min(tied, key=lambda value: (len(value), value))
+    return list(best_boundaries), best_value
+
+
+def test_dp_matches_exhaustive_randomized_small_series():
+    rng = np.random.default_rng(20240612)
+    for n in range(2, 9):
+        for _ in range(20):
+            matrix = rng.integers(-2, 3, size=(n, 3)).astype(float)
+            minimum = int(rng.integers(1, n // 2 + 1))
+            penalty = float(rng.choice([0.0, 0.25, 1.0, 3.0]))
+            expected_boundaries, expected_objective = _exhaustive_partition(
+                matrix, penalty, minimum
+            )
+            boundaries, objective = optimal_partition(matrix, penalty, minimum)
+            assert boundaries == expected_boundaries
+            assert objective == pytest.approx(expected_objective)
+
+
+def test_dp_uses_scalar_backpointers_not_stored_boundary_tuples():
+    source = inspect.getsource(optimal_partition)
+    assert "predecessors" in source
+    assert "tuple[int, ...]" not in source
+    assert "boundaries = best[start]" not in source
 
 
 def test_constant_series_short_circuits_length_validation_and_nonconstant_does_not():

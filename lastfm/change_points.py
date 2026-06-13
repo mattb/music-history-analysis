@@ -169,41 +169,71 @@ class PrefixSSE:
         )
 
 
-def _better(
-    candidate: tuple[float, tuple[int, ...]],
-    incumbent: tuple[float, tuple[int, ...]] | None,
-) -> bool:
-    if incumbent is None or candidate[0] < incumbent[0] - 1e-12:
-        return True
-    if abs(candidate[0] - incumbent[0]) <= 1e-12:
-        return (len(candidate[1]), candidate[1]) < (len(incumbent[1]), incumbent[1])
-    return False
-
-
 def optimal_partition(
     matrix: np.ndarray, penalty: float, min_segment_bins: int
 ) -> tuple[list[int], float]:
     values = np.asarray(matrix, dtype=float)
     n = len(values)
     costs = PrefixSSE(values)
-    best: list[tuple[float, tuple[int, ...]] | None] = [None] * (n + 1)
-    best[0] = (0.0, ())
+    objectives = [math.inf] * (n + 1)
+    change_counts = [n + 1] * (n + 1)
+    predecessors = [-1] * (n + 1)
+    objectives[0] = 0.0
+    change_counts[0] = 0
+    comparison_cache: dict[tuple[int, int], int] = {}
+
+    def compare_paths(left: int, right: int) -> int:
+        """Compare finalized backpointer paths without materializing them."""
+        if left == right:
+            return 0
+        cached = comparison_cache.get((left, right))
+        if cached is not None:
+            return cached
+        left_predecessor = predecessors[left]
+        right_predecessor = predecessors[right]
+        if left_predecessor == right_predecessor:
+            result = 0
+        else:
+            result = compare_paths(left_predecessor, right_predecessor)
+            if result == 0:
+                result = -1 if left_predecessor < right_predecessor else 1
+        comparison_cache[(left, right)] = result
+        comparison_cache[(right, left)] = -result
+        return result
+
+    def candidate_is_earlier(left_start: int, right_start: int) -> bool:
+        prefix_order = compare_paths(left_start, right_start)
+        if prefix_order:
+            return prefix_order < 0
+        return left_start < right_start
+
     for end in range(min_segment_bins, n + 1):
-        incumbent = None
         for start in range(0, end - min_segment_bins + 1):
-            if best[start] is None or (start and start < min_segment_bins):
+            if not math.isfinite(objectives[start]):
                 continue
-            boundaries = best[start][1] + ((start,) if start else ())
-            candidate = (
-                best[start][0] + costs.cost(start, end) + (penalty if start else 0.0),
-                boundaries,
+            candidate_objective = (
+                objectives[start] + costs.cost(start, end) + (penalty if start else 0.0)
             )
-            if _better(candidate, incumbent):
-                incumbent = candidate
-        best[end] = incumbent
-    if best[n] is None:
+            candidate_changes = change_counts[start] + (1 if start else 0)
+            better = candidate_objective < objectives[end] - 1e-12
+            if abs(candidate_objective - objectives[end]) <= 1e-12:
+                better = candidate_changes < change_counts[end] or (
+                    candidate_changes == change_counts[end]
+                    and candidate_is_earlier(start, predecessors[end])
+                )
+            if better:
+                objectives[end] = candidate_objective
+                change_counts[end] = candidate_changes
+                predecessors[end] = start
+    if not math.isfinite(objectives[n]):
         raise ValueError("no valid partition")
-    return list(best[n][1]), float(best[n][0])
+    boundaries = []
+    cursor = n
+    while predecessors[cursor] > 0:
+        cursor = predecessors[cursor]
+        boundaries.append(cursor)
+    boundaries.reverse()
+    return boundaries, float(objectives[n])
 
 
 def _noise_variance(vectors: np.ndarray, active_dims: int) -> float:

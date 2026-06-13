@@ -46,7 +46,7 @@ Noise variance is estimated from adjacent squared vector distances divided by tw
 
 where \(m\) is `penalty_multiplier`, \(d_a\) is the number of nonconstant dimensions, and \(n\) is the number of bins. A constant series reports no changes. A nonconstant series needs at least twice the minimum segment length.
 
-Time complexity is \(O(n^2d)\); stored prefix data and the DP table require \(O(nd+n)\) space.
+Time complexity is \(O(n^2d + q)\), where \(q\) is the number of distinct backpointer comparisons needed only for objective-and-count ties and is at most \(O(n^2)\). The DP stores scalar objectives, change counts, and predecessor indexes, then reconstructs the winning boundaries once. Prefix data and ordinary DP state require \(O(nd+n)\) space; memoized exact-tie comparisons require an additional \(O(q)\) scalar entries in the pathological all-ties case. No state or candidate stores a copied boundary sequence.
 
 ## Schema v1
 
