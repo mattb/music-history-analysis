@@ -418,3 +418,82 @@ def test_artist_cohort_cli_sorts_unique_offsets_and_forwards_options(monkeypatch
 def test_trajectory_clis_reject_invalid_parameters(command_and_options):
     result = runner.invoke(app, command_and_options)
     assert result.exit_code == 2
+
+
+def test_artist_trajectories_one_shot_json_real_dispatch(monkeypatch, sample_csv):
+    import lastfm.analysis_state
+
+    monkeypatch.setattr(
+        lastfm.analysis_state.AnalysisState, "_build_user_embeddings", lambda self: None
+    )
+    monkeypatch.setattr(
+        lastfm.analysis_state.AnalysisState,
+        "_build_critics_embeddings",
+        lambda self: None,
+    )
+    monkeypatch.setattr(
+        lastfm.analysis_state.AnalysisState, "_build_critic_vectors", lambda self: None
+    )
+    result = runner.invoke(
+        app,
+        [
+            "artist-trajectories",
+            "--csv",
+            str(sample_csv),
+            "--artist",
+            "Artist C",
+            "--artist",
+            "Artist A",
+            "--start",
+            "2024-01",
+            "--end",
+            "2025-01",
+            "--json",
+        ],
+    )
+    assert result.exit_code == 0
+    payload = json.loads(result.output)
+    assert payload["ok"] is True
+    assert payload["command"] == "artist-trajectories"
+    assert [item["query_artist"] for item in payload["result"]["artists"]] == [
+        "Artist C",
+        "Artist A",
+    ]
+    assert json.dumps(payload, allow_nan=False)
+
+
+def test_artist_cohort_retention_one_shot_json_real_dispatch(monkeypatch, sample_csv):
+    import lastfm.analysis_state
+
+    monkeypatch.setattr(
+        lastfm.analysis_state.AnalysisState, "_build_user_embeddings", lambda self: None
+    )
+    monkeypatch.setattr(
+        lastfm.analysis_state.AnalysisState,
+        "_build_critics_embeddings",
+        lambda self: None,
+    )
+    monkeypatch.setattr(
+        lastfm.analysis_state.AnalysisState, "_build_critic_vectors", lambda self: None
+    )
+    result = runner.invoke(
+        app,
+        [
+            "artist-cohort-retention",
+            "--csv",
+            str(sample_csv),
+            "--offset",
+            "12",
+            "--offset",
+            "1",
+            "--offset",
+            "12",
+            "--json",
+        ],
+    )
+    assert result.exit_code == 0
+    payload = json.loads(result.output)
+    assert payload["ok"] is True
+    assert payload["command"] == "artist-cohort-retention"
+    assert payload["result"]["parameters"]["offsets"] == [1, 12]
+    assert json.dumps(payload, allow_nan=False)

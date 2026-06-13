@@ -235,6 +235,84 @@ def test_cohort_thresholds_year_transition_censoring_and_empty_cohorts():
     assert result["cohorts"][1]["cohort_size"] == 0
 
 
+def test_mixed_granularity_anchors_each_artist_to_first_activity_period():
+    frame = history(
+        [
+            ("2024-01-01", "January"),
+            ("2024-01-02", "January"),
+            ("2024-02-01", "January"),
+            ("2024-11-01", "November"),
+            ("2024-11-02", "November"),
+            ("2024-12-01", "November"),
+        ]
+    )
+    result = cohort_retention(
+        frame,
+        cohort_granularity="year",
+        activity_granularity="month",
+        min_discovery_plays=2,
+        offsets=[1],
+    )
+    cohort = result["cohorts"][0]
+    assert cohort["cohort_size"] == 2
+    assert cohort["first_period_plays"] == {"mean": 2.0, "median": 2.0}
+    assert cohort["cells"] == [
+        {
+            "offset": 1,
+            "eligible_artists": 2,
+            "retained_artists": 2,
+            "retention_rate": 1.0,
+        }
+    ]
+
+
+def test_cohort_censoring_uses_actual_source_coverage_clipped_by_end():
+    frame = history(
+        [
+            ("2024-01-01", "A"),
+            ("2024-03-01", "coverage"),
+        ]
+    )
+    beyond_source = cohort_retention(frame, start="2024-01", end="2024-12", offsets=[3])
+    assert beyond_source["observation"]["last_observable_activity_period"] == "2024-03"
+    assert beyond_source["observation"]["right_censored"] is True
+    assert beyond_source["cohorts"][0]["cells"][0]["eligible_artists"] == 0
+
+    clipped = cohort_retention(frame, start="2024-01", end="2024-02", offsets=[2])
+    assert clipped["observation"]["last_observable_activity_period"] == "2024-02"
+    assert clipped["cohorts"][0]["cells"][0]["eligible_artists"] == 0
+
+
+def test_any_later_activity_uses_active_play_threshold():
+    frame = history(
+        [
+            ("2024-01-01", "A"),
+            ("2024-02-01", "A"),
+            ("2024-01-02", "B"),
+            ("2024-02-02", "B"),
+            ("2024-02-03", "B"),
+        ]
+    )
+    result = cohort_retention(frame, min_active_plays=2, offsets=[1])
+    assert result["cohorts"][0]["any_later_activity"] == {"count": 1, "rate": 0.5}
+
+
+def test_inactivity_censoring_uses_active_threshold_not_nonzero_plays():
+    frame = history(
+        [
+            ("2024-01-01", "A"),
+            ("2024-02-01", "A"),
+            ("2024-02-02", "A"),
+            ("2024-03-01", "A"),
+        ]
+    )
+    result = artist_trajectory(frame, "A", min_period_plays=2)
+    assert result["observation"]["leading_inactivity_periods"] == 1
+    assert result["observation"]["trailing_inactivity_periods"] == 1
+    assert result["observation"]["leading_inactivity_censored"] is True
+    assert result["observation"]["trailing_inactivity_censored"] is True
+
+
 @pytest.mark.parametrize(
     "kwargs",
     [

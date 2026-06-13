@@ -47,3 +47,31 @@ R_{c,k}=\frac{\#\{i \in c:p_{i,c+k}\ge q\}}{\#\{i \in c:c+k\text{ is observable}
 This is activity in the exact target period, not cumulative activity. Artists whose target period is beyond the inclusive report window are right-censored and excluded from the denominator. A cell with no eligible artists has a null rate, never zero. Offsets are unique, nonnegative, and sorted; defaults are 1, 3, 6, 12, and 24.
 
 Each cohort also reports size, mean and median first-period plays, and the count/share with any later activity inside the report window. Empty cohorts remain in the dense output with null aggregates. Diagnostics report source coverage, report truncation, total/nonempty cohorts, and cohort membership counts.
+
+## Trajectory output schema
+
+The trajectory batch returns `artists` in query order and `count`. Each artist object contains:
+
+- `query_artist`, `status`, and resolved `artist`; a miss has `status: not_found`, a null artist, and null measurements.
+- `parameters`: granularity, requested bounds, activity threshold, and dormancy threshold.
+- `observation`: dense start/end, source start/end, report truncation flags, inactive-run lengths, and inactive-run censoring flags.
+- `timeline`: chronological `{period, plays, active}` bins.
+- `summary`: total plays, observed and active periods, active share, inclusive active span/share, and exact first/last timestamps.
+- `peak`: maximum plays, every tied period, and earliest primary period.
+- `ramp`: first active and primary peak periods, distance, endpoint counts/change, mean change, and OLS slope.
+- `dormancy`: threshold, return count, and episodes. Each episode includes its inactive bounds/length, return bin/count, three- and six-period totals, and completeness flags.
+- `segments`: active segment bounds and active-bin counts; gaps shorter than the dormancy threshold remain inside a segment.
+
+For example, counts `[1, 0, 2, 0]` from January through April with `min_period_plays=1` and `dormancy_periods=1` produce two active segments. February is a one-period dormancy returning in March. April is only trailing censored inactivity. The primary peak is March; its ramp uses `[1, 0, 2]`, so distance is 2, change is 1, mean change is 0.5, and the zero bin participates in OLS.
+
+## Cohort output schema
+
+The cohort result contains:
+
+- `parameters`: cohort and activity granularities, requested bounds, discovery/activity thresholds, and normalized offsets.
+- `observation`: requested cohort bounds, source cohort bounds, the last actually observable activity period after clipping by `end`, truncation/censoring flags, and source artist count.
+- `cohorts`: one object per dense cohort period. Each contains `cohort`, `cohort_size`, mean/median `first_period_plays`, thresholded `any_later_activity`, and retention `cells`.
+- Each cell contains `offset`, `eligible_artists`, `retained_artists`, and nullable `retention_rate`.
+- `diagnostics`: total and nonempty cohort counts plus total cohort membership.
+
+Mixed granularities retain the cohort label but anchor measurements per artist. Suppose two artists join the 2024 yearly cohort: one first appears twice in January and once in February; the other first appears twice in November and once in December. With monthly activity, `min_discovery_plays=2`, and offset 1, first-period plays are `[2, 2]`. The targets are February and December—not a shared February target—so both artists are retained. If the data ends in November, the second artist's December target is right-censored and excluded from that cell's denominator.

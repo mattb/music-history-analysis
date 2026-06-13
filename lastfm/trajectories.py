@@ -80,8 +80,9 @@ def _observation(
     source_start: pd.Period,
     source_end: pd.Period,
     counts: pd.Series,
+    min_period_plays: int,
 ) -> dict[str, Any]:
-    active_positions = np.flatnonzero(counts.to_numpy() > 0)
+    active_positions = np.flatnonzero(counts.to_numpy() >= min_period_plays)
     leading = int(active_positions[0]) if len(active_positions) else len(counts)
     trailing = (
         int(len(counts) - active_positions[-1] - 1)
@@ -137,7 +138,12 @@ def artist_trajectory(
             "artist": None,
             "parameters": parameters,
             "observation": _observation(
-                first, last, source_start, source_end, zero_counts
+                first,
+                last,
+                source_start,
+                source_end,
+                zero_counts,
+                min_period_plays,
             ),
             "timeline": [],
             "summary": None,
@@ -275,7 +281,9 @@ def artist_trajectory(
         "status": "ok",
         "artist": display,
         "parameters": parameters,
-        "observation": _observation(first, last, source_start, source_end, counts),
+        "observation": _observation(
+            first, last, source_start, source_end, counts, min_period_plays
+        ),
         "timeline": [
             {
                 "period": str(period),
@@ -342,42 +350,59 @@ def cohort_retention(
     normalized["activity_period"] = (
         normalized["timestamp"].dt.tz_localize(None).dt.to_period(activity_freq)
     )
-    discoveries = normalized.groupby("identity", sort=True)["cohort_period"].min()
-    cohort_counts = normalized.groupby(["identity", "cohort_period"]).size()
+    first_rows = (
+        normalized.sort_values("timestamp").groupby("identity", sort=True).first()
+    )
+    discovery_cohorts = first_rows["cohort_period"]
+    discovery_activity_periods = first_rows["activity_period"]
     activity_counts = normalized.groupby(["identity", "activity_period"]).size()
-    report_activity_end = last.end_time.to_period(activity_freq)
+    requested_activity_end = last.end_time.to_period(activity_freq)
+    source_activity_end = normalized["activity_period"].max()
+    report_activity_end = min(requested_activity_end, source_activity_end)
     cohorts: list[dict[str, Any]] = []
     for cohort in pd.period_range(first, last, freq=cohort_freq):
         members = [
             identity
-            for identity in discoveries.index[discoveries == cohort]
-            if int(cohort_counts.get((identity, cohort), 0)) >= min_discovery_plays
+            for identity in discovery_cohorts.index[discovery_cohorts == cohort]
+            if int(
+                activity_counts.get((identity, discovery_activity_periods[identity]), 0)
+            )
+            >= min_discovery_plays
         ]
         discovery_plays = [
-            int(cohort_counts[(identity, cohort)]) for identity in members
-        ]
-        cohort_activity_period = cohort.start_time.to_period(activity_freq)
-        later_count = sum(
-            bool(
-                normalized[
-                    (normalized["identity"] == identity)
-                    & (normalized["activity_period"] > cohort_activity_period)
-                    & (normalized["activity_period"] <= report_activity_end)
-                ].shape[0]
-            )
+            int(activity_counts[(identity, discovery_activity_periods[identity])])
             for identity in members
-        )
+        ]
+        later_count = 0
+        for identity in members:
+            first_activity = discovery_activity_periods[identity]
+            later_counts = [
+                int(count)
+                for (artist_identity, period), count in activity_counts.items()
+                if artist_identity == identity
+                and first_activity < period <= report_activity_end
+            ]
+            later_count += any(count >= min_active_plays for count in later_counts)
         cells = []
         for offset in offset_values:
-            target = cohort_activity_period + offset
-            eligible = len(members) if target <= report_activity_end else 0
-            retained = (
-                sum(
-                    int(activity_counts.get((identity, target), 0)) >= min_active_plays
-                    for identity in members
+            eligible_members = [
+                identity
+                for identity in members
+                if discovery_activity_periods[identity] + offset <= report_activity_end
+            ]
+            eligible = len(eligible_members)
+            retained = sum(
+                int(
+                    activity_counts.get(
+                        (
+                            identity,
+                            discovery_activity_periods[identity] + offset,
+                        ),
+                        0,
+                    )
                 )
-                if eligible
-                else 0
+                >= min_active_plays
+                for identity in eligible_members
             )
             cells.append(
                 {
@@ -426,8 +451,10 @@ def cohort_retention(
             "end_period": str(last),
             "source_start_period": str(source_start),
             "source_end_period": str(source_end),
+            "last_observable_activity_period": str(report_activity_end),
             "left_truncated": bool(first > source_start),
-            "right_censored": bool(last < source_end),
+            "right_truncated": bool(last < source_end),
+            "right_censored": bool(requested_activity_end > source_activity_end),
             "source_artists": int(normalized["identity"].nunique()),
         },
         "cohorts": cohorts,

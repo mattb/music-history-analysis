@@ -127,6 +127,9 @@ def get_artist_cohort_retention(
         offsets=(1, 3, 6, 12, 24) if offsets is None else offsets,
     )
 
+
+# Legacy commands below predate Ruff formatting. Keep trajectory adapter changes scoped.
+# fmt: off
 def explore_taste_evolution(
     state: AnalysisState,
     start_year: int = 2005,

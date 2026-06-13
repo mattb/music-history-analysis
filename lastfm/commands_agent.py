@@ -44,6 +44,7 @@ def _agent_help(first_sentence: str) -> str:
     return f"{first_sentence}\n\n{AGENT_ANALYSIS_HELP_SUFFIX}"
 
 
+# fmt: off
 def _resolve_target(session: str | None, csv: Path | None) -> tuple[str | None, analysis_state.AnalysisState | None]:
     if bool(session) == bool(csv):
         raise typer.BadParameter("Provide exactly one of --session or --csv")
@@ -77,6 +78,7 @@ def _run_agent_command(command: str, session: str | None, csv: Path | None, para
         raise typer.Exit(1)
 
 
+# fmt: on
 def register(app: typer.Typer) -> None:
     def validate_granularity(value: str, option: str) -> None:
         if value not in {"month", "year"}:
@@ -84,9 +86,7 @@ def register(app: typer.Typer) -> None:
                 f"{option} must be month or year", param_hint=f"--{option}"
             )
 
-    def validate_bounds(
-        start: str | None, end: str | None, granularity: str
-    ) -> None:
+    def validate_bounds(start: str | None, end: str | None, granularity: str) -> None:
         pattern = r"\d{4}-(0[1-9]|1[0-2])" if granularity == "month" else r"\d{4}"
         expected = "YYYY-MM" if granularity == "month" else "YYYY"
         for name, value in (("start", start), ("end", end)):
@@ -98,18 +98,37 @@ def register(app: typer.Typer) -> None:
             raise typer.BadParameter("start must not exceed end", param_hint="--start")
 
     @app.command(
-        "artist-trajectories", help=_agent_help("Measure artist relationship trajectories.")
+        "artist-trajectories",
+        help=_agent_help("Measure artist relationship trajectories."),
     )
     def artist_trajectories(
-        session: str | None = typer.Option(None, "--session", help="Named daemon session ID."),
-        csv: Path | None = typer.Option(None, "--csv", help="Run one-shot against this scrobbles CSV."),
-        artists: list[str] = typer.Option(..., "--artist", help="Exact artist name. Repeat to preserve query order."),
-        granularity: str = typer.Option("month", "--granularity", help="month or year."),
-        start: str | None = typer.Option(None, "--start", help="Inclusive first period."),
+        session: str | None = typer.Option(
+            None, "--session", help="Named daemon session ID."
+        ),
+        csv: Path | None = typer.Option(
+            None, "--csv", help="Run one-shot against this scrobbles CSV."
+        ),
+        artists: list[str] = typer.Option(
+            ..., "--artist", help="Exact artist name. Repeat to preserve query order."
+        ),
+        granularity: str = typer.Option(
+            "month", "--granularity", help="month or year."
+        ),
+        start: str | None = typer.Option(
+            None, "--start", help="Inclusive first period."
+        ),
         end: str | None = typer.Option(None, "--end", help="Inclusive last period."),
-        min_period_plays: int = typer.Option(1, "--min-period-plays", help="Minimum plays for an active period."),
-        dormancy_periods: int = typer.Option(6, "--dormancy-periods", help="Consecutive inactive periods defining dormancy."),
-        _json_output: bool = typer.Option(True, "--json", help="Emit structured JSON on stdout."),
+        min_period_plays: int = typer.Option(
+            1, "--min-period-plays", help="Minimum plays for an active period."
+        ),
+        dormancy_periods: int = typer.Option(
+            6,
+            "--dormancy-periods",
+            help="Consecutive inactive periods defining dormancy.",
+        ),
+        _json_output: bool = typer.Option(
+            True, "--json", help="Emit structured JSON on stdout."
+        ),
     ):
         validate_granularity(granularity, "granularity")
         validate_bounds(start, end, granularity)
@@ -132,28 +151,53 @@ def register(app: typer.Typer) -> None:
         )
 
     @app.command(
-        "artist-cohort-retention", help=_agent_help("Measure discovery-cohort retention.")
+        "artist-cohort-retention",
+        help=_agent_help("Measure discovery-cohort retention."),
     )
     def artist_cohort_retention(
-        session: str | None = typer.Option(None, "--session", help="Named daemon session ID."),
-        csv: Path | None = typer.Option(None, "--csv", help="Run one-shot against this scrobbles CSV."),
-        cohort_granularity: str = typer.Option("month", "--cohort-granularity", help="Cohort period: month or year."),
-        activity_granularity: str = typer.Option("month", "--activity-granularity", help="Retention period: month or year."),
-        start: str | None = typer.Option(None, "--start", help="Inclusive first cohort period."),
-        end: str | None = typer.Option(None, "--end", help="Inclusive last cohort period."),
-        min_discovery_plays: int = typer.Option(1, "--min-discovery-plays", help="Minimum plays in the discovery period."),
-        min_active_plays: int = typer.Option(1, "--min-active-plays", help="Minimum plays at a retention offset."),
-        offsets: list[int] | None = typer.Option(None, "--offset", help="Nonnegative activity-period offset. Repeatable."),
-        _json_output: bool = typer.Option(True, "--json", help="Emit structured JSON on stdout."),
+        session: str | None = typer.Option(
+            None, "--session", help="Named daemon session ID."
+        ),
+        csv: Path | None = typer.Option(
+            None, "--csv", help="Run one-shot against this scrobbles CSV."
+        ),
+        cohort_granularity: str = typer.Option(
+            "month", "--cohort-granularity", help="Cohort period: month or year."
+        ),
+        activity_granularity: str = typer.Option(
+            "month", "--activity-granularity", help="Retention period: month or year."
+        ),
+        start: str | None = typer.Option(
+            None, "--start", help="Inclusive first cohort period."
+        ),
+        end: str | None = typer.Option(
+            None, "--end", help="Inclusive last cohort period."
+        ),
+        min_discovery_plays: int = typer.Option(
+            1, "--min-discovery-plays", help="Minimum plays in the discovery period."
+        ),
+        min_active_plays: int = typer.Option(
+            1, "--min-active-plays", help="Minimum plays at a retention offset."
+        ),
+        offsets: list[int] | None = typer.Option(
+            None, "--offset", help="Nonnegative activity-period offset. Repeatable."
+        ),
+        _json_output: bool = typer.Option(
+            True, "--json", help="Emit structured JSON on stdout."
+        ),
     ):
         validate_granularity(cohort_granularity, "cohort-granularity")
         validate_granularity(activity_granularity, "activity-granularity")
         validate_bounds(start, end, cohort_granularity)
         if min_discovery_plays <= 0 or min_active_plays <= 0:
             raise typer.BadParameter("thresholds must be positive")
-        selected_offsets = [1, 3, 6, 12, 24] if offsets is None else sorted(set(offsets))
+        selected_offsets = (
+            [1, 3, 6, 12, 24] if offsets is None else sorted(set(offsets))
+        )
         if not selected_offsets or any(offset < 0 for offset in selected_offsets):
-            raise typer.BadParameter("offsets must be nonnegative", param_hint="--offset")
+            raise typer.BadParameter(
+                "offsets must be nonnegative", param_hint="--offset"
+            )
         _run_agent_command(
             "artist-cohort-retention",
             session,
@@ -169,6 +213,8 @@ def register(app: typer.Typer) -> None:
             },
         )
 
+    # Legacy registrations below predate Ruff formatting. Keep new commands scoped.
+    # fmt: off
     @app.command("listening-graph", help=_agent_help("Measure artist co-listening sessions."))
     def listening_graph(
         session: str | None = typer.Option(None, "--session", help="Named daemon session ID."),
