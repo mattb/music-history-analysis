@@ -13,6 +13,7 @@ from . import (
     crossref,
     data,
     event_windows,
+    change_points,
     listening_graph,
     musicbrainz_db,
     trajectories,
@@ -49,6 +50,7 @@ COMMANDS = {
     "artist-trajectories": "get_artist_trajectories",
     "artist-cohort-retention": "get_artist_cohort_retention",
     "life-event-window": "get_life_event_window",
+    "listening-change-points": "get_listening_change_points",
 }
 
 
@@ -90,6 +92,29 @@ def get_listening_graph(
         focus_artist=focus_artist,
         hops=hops,
         output_format=output_format,
+    )
+
+
+def get_listening_change_points(
+    state: AnalysisState,
+    frequency: str = "month",
+    vector_mode: str = "shares",
+    top_artists: int = 100,
+    min_segment_bins: int = 6,
+    penalty_multiplier: float = 1.0,
+    top_deltas: int = 20,
+) -> dict[str, Any]:
+    """Return measured candidate boundaries without interpretation."""
+    return change_points.detect_change_points(
+        state.df,
+        change_points.ChangePointSpec(
+            frequency=frequency,
+            vector_mode=vector_mode,
+            top_artists=top_artists,
+            min_segment_bins=min_segment_bins,
+            penalty_multiplier=penalty_multiplier,
+            top_deltas=top_deltas,
+        ),
     )
 
 

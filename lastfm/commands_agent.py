@@ -69,7 +69,9 @@ def _run_agent_command(command: str, session: str | None, csv: Path | None, para
     try:
         with redirect_stdout(StringIO()):
             session_id, state = _resolve_target(
-                session, csv, lightweight=command == "life-event-window"
+                session,
+                csv,
+                lightweight=command in {"life-event-window", "listening-change-points"},
             )
             if session_id:
                 result = dispatch_to_session(session_id, command, params)
@@ -107,6 +109,70 @@ def register(app: typer.Typer) -> None:
                 )
         if start is not None and end is not None and start > end:
             raise typer.BadParameter("start must not exceed end", param_hint="--start")
+
+    @app.command(
+        "listening-change-points",
+        help=_agent_help("Detect candidate changes in listening composition."),
+    )
+    def listening_change_points(
+        session: str | None = typer.Option(
+            None, "--session", help="Named daemon session ID."
+        ),
+        csv: Path | None = typer.Option(
+            None, "--csv", help="Run one-shot against this scrobbles CSV."
+        ),
+        frequency: str = typer.Option(
+            "month", "--frequency", help="Calendar bins: week or month."
+        ),
+        vector_mode: str = typer.Option(
+            "shares", "--vector-mode", help="Vector representation: shares or counts."
+        ),
+        top_artists: int = typer.Option(
+            100, "--top-artists", help="Artist dimensions retained before __OTHER__."
+        ),
+        min_segment_bins: int = typer.Option(
+            6, "--min-segment-bins", help="Minimum bins in every segment."
+        ),
+        penalty_multiplier: float = typer.Option(
+            1.0,
+            "--penalty-multiplier",
+            help="Positive multiplier for the estimated-noise penalty.",
+        ),
+        top_deltas: int = typer.Option(
+            20, "--top-deltas", help="Largest artist-share changes to report."
+        ),
+        _json_output: bool = typer.Option(
+            True, "--json", help="Emit structured JSON on stdout."
+        ),
+    ):
+        if frequency not in {"week", "month"}:
+            raise typer.BadParameter(
+                "frequency must be week or month", param_hint="--frequency"
+            )
+        if vector_mode not in {"shares", "counts"}:
+            raise typer.BadParameter(
+                "vector-mode must be shares or counts", param_hint="--vector-mode"
+            )
+        if top_artists <= 0 or min_segment_bins <= 0 or top_deltas <= 0:
+            raise typer.BadParameter("count options must be positive")
+        if not math.isfinite(penalty_multiplier) or penalty_multiplier <= 0:
+            raise typer.BadParameter(
+                "penalty-multiplier must be finite and positive",
+                param_hint="--penalty-multiplier",
+            )
+        _run_agent_command(
+            "listening-change-points",
+            session,
+            csv,
+            {
+                "frequency": frequency,
+                "vector_mode": vector_mode,
+                "top_artists": top_artists,
+                "min_segment_bins": min_segment_bins,
+                "penalty_multiplier": penalty_multiplier,
+                "top_deltas": top_deltas,
+            },
+        )
 
     @app.command(
         "life-event-window",

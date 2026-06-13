@@ -78,3 +78,11 @@ Use `life-event-window` only after the user supplies the event date and relevant
 Lead with measured counts, rates, shares, deltas, and baseline residuals. These measurements do not establish that the event caused a change. Treat a large residual as evidence for closer inspection, not as an emotional or biographical conclusion.
 
 Check artist, album, and track groupings when the question warrants them. Report the pre, event, and post window lengths; the baseline length; the timezone; and any clipped coverage. Keep interpretation in this journalism layer: the analytics layer should contain measurements and coverage facts only.
+
+## Change-Point Evidence
+
+Use `listening-change-points` to find candidate boundaries without preselecting years or assuming that familiar calendar divisions are meaningful. Treat its numbered segments as measured intervals, not named eras.
+
+Inspect low-volume and empty-bin diagnostics before treating a boundary as substantial. Read the plays-per-bin and artist-share deltas on both sides of each candidate, and keep frequency, vector mode, vocabulary size, minimum segment length, and penalty multiplier identical when comparing runs.
+
+The analytics result must not supply names, locations, moods, or causes. Those are journalistic interpretations. Add them only after checking the listening evidence and, when relevant, asking the user or consulting an independent source.

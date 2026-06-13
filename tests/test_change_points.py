@@ -1,0 +1,192 @@
+import json
+
+import numpy as np
+import pandas as pd
+import pytest
+
+from lastfm.change_points import (
+    ChangePointSpec,
+    PrefixSSE,
+    analyze_change_points,
+    bin_artist_counts,
+    optimal_partition,
+    transform_vectors,
+)
+
+
+def plays(monthly_artists):
+    rows = []
+    for month, artists in enumerate(monthly_artists, 1):
+        for day, artist in enumerate(artists, 1):
+            rows.append(
+                {
+                    "timestamp": pd.Timestamp(2024, month, min(day, 28), tz="UTC"),
+                    "artist": artist,
+                }
+            )
+    return pd.DataFrame(rows)
+
+
+def test_spec_rejects_invalid_values_and_bool_or_fractional_counts():
+    for kwargs in (
+        {"frequency": "day"},
+        {"vector_mode": "raw"},
+        {"penalty_multiplier": float("nan")},
+        {"penalty_multiplier": 0},
+    ):
+        with pytest.raises(ValueError):
+            ChangePointSpec(**kwargs)
+    for field in ("top_artists", "min_segment_bins", "top_deltas"):
+        for value in (True, 1.5, 0):
+            with pytest.raises(ValueError):
+                ChangePointSpec(**{field: value})
+
+
+def test_computed_penalty_must_remain_finite():
+    with pytest.raises(ValueError, match="computed penalty"):
+        analyze_change_points(
+            plays([["A"]] * 3 + [["B"]] * 3),
+            ChangePointSpec(min_segment_bins=2, penalty_multiplier=1.7e308),
+        )
+
+
+def test_month_bins_are_utc_continuous_and_reconcile_with_other():
+    frame = pd.DataFrame(
+        {
+            "timestamp": pd.to_datetime(
+                ["2024-01-31T23:00Z", "2024-03-01T00:00Z", "2024-03-02T00:00Z"]
+            ),
+            "artist": ["B", "A", "C"],
+        }
+    )
+    binned = bin_artist_counts(
+        frame, ChangePointSpec(top_artists=1, min_segment_bins=1)
+    )
+    assert binned.timestamps == [
+        "2024-01-01T00:00:00Z",
+        "2024-02-01T00:00:00Z",
+        "2024-03-01T00:00:00Z",
+    ]
+    assert binned.artists == ["A", "__OTHER__"]
+    assert binned.counts.tolist() == [[0, 1], [0, 0], [1, 1]]
+    assert int(binned.counts.sum()) == len(frame)
+
+
+def test_week_bins_use_iso_monday_and_vocabulary_ties_are_name_ascending():
+    frame = pd.DataFrame(
+        {
+            "timestamp": pd.to_datetime(
+                ["2024-01-07T23:59Z", "2024-01-08T00:00Z", "2024-01-21T12:00Z"]
+            ),
+            "artist": ["B", "A", "C"],
+        }
+    )
+    binned = bin_artist_counts(
+        frame, ChangePointSpec(frequency="week", top_artists=2, min_segment_bins=1)
+    )
+    assert binned.timestamps == [
+        "2024-01-01T00:00:00Z",
+        "2024-01-08T00:00:00Z",
+        "2024-01-15T00:00:00Z",
+    ]
+    assert binned.artists == ["A", "B", "__OTHER__"]
+
+
+def test_transform_vectors_matches_hand_calculations():
+    counts = np.array([[3.0, 1.0], [0.0, 0.0]])
+    shares, metadata = transform_vectors(counts, "shares")
+    np.testing.assert_allclose(shares[0], [np.sqrt(0.75), 0.5])
+    np.testing.assert_array_equal(shares[1], [0, 0])
+    assert metadata["transformation"] == "sqrt_artist_share"
+
+    count_vectors, metadata = transform_vectors(
+        np.array([[0.0, 1.0], [0.0, 3.0]]), "counts"
+    )
+    np.testing.assert_array_equal(count_vectors[:, 0], [0, 0])
+    np.testing.assert_allclose(count_vectors[:, 1], [-1, 1])
+    assert metadata["standardization"] == "population"
+
+
+def test_prefix_sse_matches_direct_cost():
+    matrix = np.array([[1.0, 2.0], [2.0, 4.0], [7.0, 1.0], [8.0, 3.0]])
+    prefix = PrefixSSE(matrix)
+    direct = ((matrix[1:4] - matrix[1:4].mean(axis=0)) ** 2).sum()
+    assert prefix.cost(1, 4) == pytest.approx(direct)
+
+
+def test_exact_dp_finds_two_and_three_regimes_and_respects_minimum_lengths():
+    two = np.vstack([np.zeros((3, 2)), np.full((3, 2), 4.0)])
+    assert optimal_partition(two, penalty=1, min_segment_bins=3)[0] == [3]
+    three = np.vstack([np.zeros((2, 1)), np.full((2, 1), 4.0), np.full((2, 1), -4.0)])
+    assert optimal_partition(three, penalty=1, min_segment_bins=2)[0] == [2, 4]
+    assert all(b - a >= 2 for a, b in zip([0, 2, 4], [2, 4, 6]))
+
+
+def test_dp_ties_choose_fewer_then_lexicographically_earliest_boundaries():
+    constant = np.zeros((6, 1))
+    assert optimal_partition(constant, penalty=0, min_segment_bins=2)[0] == []
+    alternating = np.array([[0.0], [0.0], [1.0], [1.0], [0.0], [0.0]])
+    boundaries, _ = optimal_partition(alternating, penalty=-0.5, min_segment_bins=2)
+    assert boundaries == [2, 4]
+
+
+def test_constant_series_short_circuits_length_validation_and_nonconstant_does_not():
+    constant = plays([["A"]] * 3)
+    result = analyze_change_points(constant, ChangePointSpec(min_segment_bins=6))
+    assert result["diagnostics"]["constant_series"] is True
+    assert result["change_points"] == []
+    with pytest.raises(ValueError, match="at least 12 bins"):
+        analyze_change_points(
+            plays([["A"], ["B"], ["A"]]), ChangePointSpec(min_segment_bins=6)
+        )
+
+
+def test_schema_reconciles_segments_deltas_and_has_no_interpretive_fields():
+    frame = plays([["A"]] * 3 + [["B", "B"]] * 3)
+    result = analyze_change_points(
+        frame,
+        ChangePointSpec(min_segment_bins=2, penalty_multiplier=0.01, top_deltas=1),
+    )
+    assert result["schema_version"] == 1
+    assert result["change_points"][0]["timestamp"] == "2024-04-01T00:00:00Z"
+    assert result["change_points"][0]["left_segment_id"] == 1
+    assert result["change_points"][0]["right_segment_id"] == 2
+    assert result["change_points"][0]["top_artist_share_deltas"][0]["artist"] in {
+        "A",
+        "B",
+    }
+    assert sum(segment["plays"] for segment in result["segments"]) == len(frame)
+    assert result["timezone"] == "UTC"
+    assert result["vector"]["frequency"] == "month"
+    assert result["vector"]["mode"] == "shares"
+    assert result["change_points"][0]["bin_index"] == 3
+    assert result["segments"][0]["end_exclusive"] == "2024-04-01T00:00:00Z"
+    assert result["diagnostics"]["total_bins"] == 6
+    assert result["diagnostics"]["low_volume_bins"][0]["plays"] < 10
+    forbidden = {"name", "label", "location", "genre", "mood", "cause"}
+
+    def keys(value):
+        if isinstance(value, dict):
+            return set(value).union(*(keys(v) for v in value.values()))
+        if isinstance(value, list):
+            return set().union(*(keys(v) for v in value)) if value else set()
+        return set()
+
+    assert not (keys(result) & forbidden)
+    assert json.dumps(result, allow_nan=False, sort_keys=True)
+
+
+def test_analysis_is_stable_under_row_shuffle_and_penalty_is_monotone():
+    frame = plays([["A"]] * 3 + [["B"]] * 3 + [["A"]] * 3)
+    low = analyze_change_points(
+        frame, ChangePointSpec(min_segment_bins=2, penalty_multiplier=0.01)
+    )
+    high = analyze_change_points(
+        frame, ChangePointSpec(min_segment_bins=2, penalty_multiplier=100)
+    )
+    shuffled = analyze_change_points(
+        frame.sample(frac=1, random_state=3),
+        ChangePointSpec(min_segment_bins=2, penalty_multiplier=0.01),
+    )
+    assert len(high["change_points"]) <= len(low["change_points"])
+    assert json.dumps(low, sort_keys=True) == json.dumps(shuffled, sort_keys=True)

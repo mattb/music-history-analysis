@@ -227,6 +227,129 @@ def test_listening_stats_help_documents_output_contract():
     assert "--csv" in result.output
 
 
+def test_listening_change_points_cli_forwards_all_options(monkeypatch):
+    import lastfm.commands_agent
+
+    captured = {}
+    monkeypatch.setattr(
+        lastfm.commands_agent,
+        "_run_agent_command",
+        lambda command, session, csv, params: captured.update(
+            command=command, session=session, csv=csv, params=params
+        ),
+    )
+    result = runner.invoke(
+        app,
+        [
+            "listening-change-points",
+            "--session",
+            "live",
+            "--frequency",
+            "week",
+            "--vector-mode",
+            "counts",
+            "--top-artists",
+            "12",
+            "--min-segment-bins",
+            "3",
+            "--penalty-multiplier",
+            "2.5",
+            "--top-deltas",
+            "7",
+            "--json",
+        ],
+    )
+    assert result.exit_code == 0, result.output
+    assert captured == {
+        "command": "listening-change-points",
+        "session": "live",
+        "csv": None,
+        "params": {
+            "frequency": "week",
+            "vector_mode": "counts",
+            "top_artists": 12,
+            "min_segment_bins": 3,
+            "penalty_multiplier": 2.5,
+            "top_deltas": 7,
+        },
+    }
+
+
+@pytest.mark.parametrize(
+    "options",
+    [
+        ["--frequency", "day"],
+        ["--vector-mode", "raw"],
+        ["--top-artists", "0"],
+        ["--min-segment-bins", "0"],
+        ["--top-deltas", "0"],
+        ["--penalty-multiplier", "nan"],
+    ],
+)
+def test_listening_change_points_cli_rejects_invalid_options(options):
+    result = runner.invoke(
+        app, ["listening-change-points", "--session", "live", *options]
+    )
+    assert result.exit_code == 2
+
+
+def test_listening_change_points_real_one_shot_and_unix_socket_parity(
+    tmp_path, monkeypatch
+):
+    import shutil
+    import tempfile
+    import threading
+    import lastfm.session_client
+    from lastfm.analysis_state import AnalysisState
+    from lastfm.session_daemon import AgentRequestHandler, UnixAgentServer
+
+    csv = tmp_path / "recenttracks-change.csv"
+    rows = []
+    for month, artist in enumerate(["A", "A", "A", "B", "B", "B"], 1):
+        import datetime
+
+        uts = int(datetime.datetime(2024, month, 1, tzinfo=datetime.UTC).timestamp())
+        rows.append(f"{uts},{2024}-{month:02d}-01 00:00:00,{artist},,,,,")
+    csv.write_text(
+        "uts,utc_time,artist,artist_mbid,album,album_mbid,track,track_mbid\n"
+        + "\n".join(rows)
+    )
+    state = AnalysisState()
+    state.csv_path = csv
+    from lastfm import data
+
+    state.df = data.load_scrobbles(csv)
+    session_root = tempfile.mkdtemp(prefix="lastfm-change-", dir="/tmp")
+    monkeypatch.setenv("LASTFM_SESSION_ROOT", str(session_root))
+    paths = lastfm.session_client.session_paths("change-parity")
+    paths.root.mkdir(parents=True)
+    server = UnixAgentServer(
+        str(paths.socket), AgentRequestHandler, state, "change-parity"
+    )
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    options = ["--min-segment-bins", "2", "--penalty-multiplier", "0.01", "--json"]
+    try:
+        one_shot = runner.invoke(
+            app, ["listening-change-points", "--csv", str(csv), *options]
+        )
+        session = runner.invoke(
+            app, ["listening-change-points", "--session", "change-parity", *options]
+        )
+    finally:
+        server.shutdown()
+        server.server_close()
+        thread.join(timeout=2)
+        shutil.rmtree(session_root)
+    assert one_shot.exit_code == 0, one_shot.output
+    assert session.exit_code == 0, session.output
+    assert json.loads(session.output)["result"] == json.loads(one_shot.output)["result"]
+    assert (
+        json.loads(one_shot.output)["result"]["change_points"][0]["timestamp"]
+        == "2024-04-01T00:00:00Z"
+    )
+
+
 def test_session_start_help_documents_lifecycle():
     result = runner.invoke(app, ["session-start", "--help"])
     assert result.exit_code == 0

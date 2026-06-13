@@ -2,6 +2,7 @@ import pytest
 
 from lastfm.agent_tools import (
     dispatch,
+    get_listening_change_points,
     get_life_event_window,
     get_artist_cohort_retention,
     get_artist_trajectories,
@@ -125,3 +126,16 @@ def test_life_event_window_wrapper_requires_canonical_iso_date(monkeypatch, samp
     state = loaded_lightweight_state(monkeypatch, sample_csv)
     with pytest.raises(ValueError, match="YYYY-MM-DD"):
         get_life_event_window(state, event_date="20240102")
+
+
+def test_listening_change_points_wrapper_and_dispatch(monkeypatch, sample_csv):
+    state = loaded_lightweight_state(monkeypatch, sample_csv)
+    direct = get_listening_change_points(state, min_segment_bins=1, top_artists=2)
+    dispatched = dispatch(
+        state,
+        "listening-change-points",
+        {"min_segment_bins": 1, "top_artists": 2},
+    )
+    assert direct == dispatched
+    assert direct["schema_version"] == 1
+    assert direct["parameters"]["top_artists"] == 2
