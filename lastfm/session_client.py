@@ -4,13 +4,12 @@ import fcntl
 import errno
 import json
 import os
-import queue
+import selectors
 import shlex
 import shutil
 import socket
 import subprocess
 import sys
-import threading
 import time
 from contextlib import contextmanager
 from dataclasses import dataclass
@@ -176,48 +175,28 @@ def _start_session_until_ready(
         start_new_session=True,
     )
     ready = False
+    startup_lines: Iterator[str] | None = None
     try:
         if process.stdout is None:
             raise RuntimeError(
                 f"Could not read startup events for session {session_id}"
             )
 
-        startup_events: queue.Queue[tuple[str, object]] = queue.Queue()
-
-        def read_startup_events() -> None:
-            try:
-                while True:
-                    line = process.stdout.readline()
-                    startup_events.put(("line", line))
-                    if not line:
-                        return
-            except BaseException as exc:
-                startup_events.put(("error", exc))
-
-        threading.Thread(target=read_startup_events, daemon=True).start()
-        deadline = time.monotonic() + startup_timeout_seconds
+        startup_lines = _startup_lines_until_deadline(
+            process.stdout, startup_timeout_seconds
+        )
         while True:
-            remaining = deadline - time.monotonic()
-            if remaining <= 0:
-                raise RuntimeError(
-                    f"Session {session_id} timed out waiting for ready after "
-                    f"{startup_timeout_seconds:g} seconds"
-                )
             try:
-                kind, payload = startup_events.get(timeout=remaining)
-            except queue.Empty as exc:
+                line = next(startup_lines)
+            except TimeoutError as exc:
                 raise RuntimeError(
                     f"Session {session_id} timed out waiting for ready after "
                     f"{startup_timeout_seconds:g} seconds"
                 ) from exc
-
-            if kind == "error":
+            except StopIteration as exc:
                 raise RuntimeError(
                     f"Could not read startup events for session {session_id}"
-                ) from payload
-            line = payload
-            if not isinstance(line, str):
-                raise RuntimeError(f"Invalid startup output for session {session_id}")
+                ) from exc
             if not line:
                 returncode = process.poll()
                 if returncode is None:
@@ -245,12 +224,51 @@ def _start_session_until_ready(
         _terminate_started_process(process)
         raise
     finally:
+        close_startup_lines = getattr(startup_lines, "close", None)
+        if close_startup_lines is not None:
+            close_startup_lines()
         if process.stdout is not None:
             process.stdout.close()
 
     if not ready:
         raise RuntimeError(f"Session {session_id} did not become ready")
     return process
+
+
+def _startup_lines_until_deadline(
+    stream: TextIO, timeout_seconds: float
+) -> Iterator[str]:
+    fd = stream.fileno()
+    deadline = time.monotonic() + timeout_seconds
+    buffered = b""
+    selector = selectors.DefaultSelector()
+    selector.register(fd, selectors.EVENT_READ)
+    os.set_blocking(fd, False)
+    try:
+        while True:
+            newline = buffered.find(b"\n")
+            if newline >= 0:
+                line = buffered[: newline + 1]
+                buffered = buffered[newline + 1 :]
+                yield line.decode()
+                continue
+
+            remaining = deadline - time.monotonic()
+            if remaining <= 0 or not selector.select(remaining):
+                raise TimeoutError
+
+            try:
+                chunk = os.read(fd, 65536)
+            except BlockingIOError:
+                continue
+            if not chunk:
+                if buffered:
+                    yield buffered.decode()
+                yield ""
+                return
+            buffered += chunk
+    finally:
+        selector.close()
 
 
 def _terminate_started_process(process: subprocess.Popen) -> None:

@@ -24,6 +24,14 @@ from typer.testing import CliRunner
 runner = CliRunner()
 
 
+def fake_startup_lines(stream, _timeout_seconds):
+    while True:
+        line = stream.readline()
+        yield line
+        if not line:
+            return
+
+
 def test_session_paths_are_isolated_by_id(tmp_path, monkeypatch):
     monkeypatch.setenv("LASTFM_SESSION_ROOT", str(tmp_path))
     paths = session_paths("music-2025")
@@ -323,6 +331,9 @@ def test_start_session_json_forwards_startup_events_until_ready(
         return fake_process
 
     monkeypatch.setattr(session_client.subprocess, "Popen", fake_popen)
+    monkeypatch.setattr(
+        session_client, "_startup_lines_until_deadline", fake_startup_lines
+    )
 
     process = start_session(
         "music-2025", tmp_path / "recenttracks-test.csv", json_output=True
@@ -405,6 +416,9 @@ def test_start_session_until_ready_is_silent_without_event_stream(
         return fake_process
 
     monkeypatch.setattr(session_client.subprocess, "Popen", fake_popen)
+    monkeypatch.setattr(
+        session_client, "_startup_lines_until_deadline", fake_startup_lines
+    )
 
     process = session_client._start_session_until_ready(
         "music-2025", tmp_path / "recenttracks-test.csv", event_stream=None
@@ -414,6 +428,95 @@ def test_start_session_until_ready_is_silent_without_event_stream(
     assert "--json" in popen_commands[0]
     assert fake_process.stdout.closed is True
     assert capsys.readouterr().out == ""
+
+
+def test_start_session_until_ready_returns_while_real_ready_child_stays_alive(
+    tmp_path, monkeypatch
+):
+    real_popen = session_client.subprocess.Popen
+    children = []
+
+    def spawn_ready_child(*_args, **_kwargs):
+        child = real_popen(
+            [
+                session_client.sys.executable,
+                "-c",
+                (
+                    "import json, time; "
+                    "print(json.dumps({'event': 'ready'}), flush=True); "
+                    "time.sleep(30)"
+                ),
+            ],
+            stdin=session_client.subprocess.DEVNULL,
+            stdout=session_client.subprocess.PIPE,
+            stderr=session_client.subprocess.DEVNULL,
+            text=True,
+        )
+        children.append(child)
+        return child
+
+    monkeypatch.setattr(session_client.subprocess, "Popen", spawn_ready_child)
+    results = []
+    errors = []
+
+    def start():
+        try:
+            results.append(
+                session_client._start_session_until_ready(
+                    "music-2025",
+                    tmp_path / "recenttracks-test.csv",
+                    startup_timeout_seconds=1,
+                )
+            )
+        except BaseException as exc:
+            errors.append(exc)
+
+    thread = threading.Thread(target=start, daemon=True)
+    thread.start()
+    thread.join(timeout=1)
+    returned_promptly = not thread.is_alive()
+    child_was_running = bool(children) and children[0].poll() is None
+
+    for child in children:
+        if child.poll() is None:
+            child.terminate()
+        child.wait(timeout=2)
+    thread.join(timeout=2)
+
+    assert returned_promptly
+    assert child_was_running
+    assert errors == []
+    assert results == children
+
+
+def test_start_session_until_ready_times_out_and_reaps_real_child(
+    tmp_path, monkeypatch
+):
+    real_popen = session_client.subprocess.Popen
+    children = []
+
+    def spawn_silent_child(*_args, **_kwargs):
+        child = real_popen(
+            [session_client.sys.executable, "-c", "import time; time.sleep(30)"],
+            stdin=session_client.subprocess.DEVNULL,
+            stdout=session_client.subprocess.PIPE,
+            stderr=session_client.subprocess.DEVNULL,
+            text=True,
+        )
+        children.append(child)
+        return child
+
+    monkeypatch.setattr(session_client.subprocess, "Popen", spawn_silent_child)
+
+    with pytest.raises(RuntimeError, match="timed out waiting for ready"):
+        session_client._start_session_until_ready(
+            "music-2025",
+            tmp_path / "recenttracks-test.csv",
+            startup_timeout_seconds=0.05,
+        )
+
+    assert len(children) == 1
+    assert children[0].poll() is not None
 
 
 def test_start_session_until_ready_times_out_and_reaps_process(tmp_path, monkeypatch):
@@ -449,6 +552,12 @@ def test_start_session_until_ready_times_out_and_reaps_process(tmp_path, monkeyp
     monkeypatch.setattr(
         session_client.subprocess, "Popen", lambda *_a, **_k: FakeProcess()
     )
+
+    def timeout_lines(*_args):
+        raise TimeoutError
+        yield
+
+    monkeypatch.setattr(session_client, "_startup_lines_until_deadline", timeout_lines)
 
     with pytest.raises(RuntimeError, match="timed out waiting for ready"):
         session_client._start_session_until_ready(
@@ -503,6 +612,9 @@ def test_start_session_until_ready_reaps_process_when_event_stream_fails(
 
     monkeypatch.setattr(
         session_client.subprocess, "Popen", lambda *_a, **_k: FakeProcess()
+    )
+    monkeypatch.setattr(
+        session_client, "_startup_lines_until_deadline", fake_startup_lines
     )
 
     with pytest.raises(OSError, match="stream failed"):
@@ -590,6 +702,9 @@ def test_start_session_until_ready_reaps_process_on_malformed_output(
 
     monkeypatch.setattr(
         session_client.subprocess, "Popen", lambda *_a, **_k: FakeProcess()
+    )
+    monkeypatch.setattr(
+        session_client, "_startup_lines_until_deadline", fake_startup_lines
     )
 
     with pytest.raises(RuntimeError, match="invalid startup JSON"):
