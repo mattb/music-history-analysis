@@ -10,6 +10,12 @@ This repo contains a Python CLI (`lastfm`) for analyzing Last.fm listening histo
 - Agent-native CLI: use top-level `lastfm` commands such as `lastfm session-start`, `lastfm listening-stats`, and `lastfm blind-spots`.
 - Long-lived agent sessions use daemon metadata and sockets under `~/.cache/lastfm-analysis/sessions/<session-id>/`.
 
+## Agent Sessions
+- Named session metadata persists after its daemon exits. The daemon exits after 30 minutes without an active request.
+- Analysis commands that use `--session` transparently restart an exited daemon from the persisted absolute CSV path and retry the request once.
+- `session-list` and `session-status` are passive: they report whether the daemon is running without waking it.
+- If the persisted source CSV is missing or has moved, start a new session with `session-start` and the current CSV path.
+
 ## Data Files and Formats
 - Scrobbles CSV: `recenttracks-*.csv` in repo root (auto-detected)
   - Columns: `uts`, `utc_time`, `artist`, `artist_mbid`, `album`, `album_mbid`, `track`, `track_mbid`

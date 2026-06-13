@@ -16,6 +16,12 @@ Use this skill to investigate listening history as source material for music-dat
 
 For multi-step work, start or reuse a daemon session so repeated probes share the same CSV, cache, and context. For a small lookup, a one-shot command with `--csv` is enough.
 
+## Session Persistence
+
+Named session metadata persists after its daemon exits. A daemon exits after 30 minutes without an active request. Analysis commands using `--session` transparently restart it from the persisted absolute CSV path and retry once. `session-list` and `session-status` are passive: they report whether the daemon is running without waking it. If the source CSV is missing or has moved, create a new session with `session-start` and the current CSV path.
+
+A daemon restart is infrastructure lifecycle, never evidence of a listening-data gap. Keep session state handling separate from analytics and journalistic interpretation.
+
 ## Evidence Discipline
 
 Prefer JSON or NDJSON output when available. Treat structured stdout as evidence: inspect it, keep compact snippets or summaries, and cite the command-derived facts behind narrative claims.
