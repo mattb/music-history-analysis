@@ -107,20 +107,21 @@ class UnixAgentServer(socketserver.UnixStreamServer):
 
 def remove_owned_runtime_files(paths: SessionPaths, pid: int) -> None:
     try:
-        paths.socket.unlink()
-    except FileNotFoundError:
-        pass
-
-    try:
         recorded_pid = int(paths.pid.read_text())
     except (FileNotFoundError, OSError, ValueError):
         return
 
-    if recorded_pid == pid:
-        try:
-            paths.pid.unlink()
-        except FileNotFoundError:
-            pass
+    if recorded_pid != pid:
+        return
+
+    try:
+        paths.socket.unlink()
+    except FileNotFoundError:
+        pass
+    try:
+        paths.pid.unlink()
+    except FileNotFoundError:
+        pass
 
 
 def main() -> None:

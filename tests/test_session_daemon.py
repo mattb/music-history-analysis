@@ -220,6 +220,27 @@ def test_remove_owned_runtime_files_preserves_different_pid(tmp_path):
 
     session_daemon.remove_owned_runtime_files(paths, 123)
 
-    assert not paths.socket.exists()
+    assert paths.socket.exists()
     assert paths.pid.read_text() == "456"
     assert paths.metadata.exists()
+
+
+@pytest.mark.parametrize("pid_contents", [None, "not-a-pid"])
+def test_remove_owned_runtime_files_preserves_socket_without_owned_pid(
+    tmp_path, pid_contents
+):
+    paths = SessionPaths(
+        root=tmp_path,
+        socket=tmp_path / "lastfm.sock",
+        pid=tmp_path / "pid",
+        metadata=tmp_path / "metadata.json",
+    )
+    paths.socket.write_text("socket")
+    if pid_contents is not None:
+        paths.pid.write_text(pid_contents)
+
+    session_daemon.remove_owned_runtime_files(paths, 123)
+
+    assert paths.socket.exists()
+    if pid_contents is not None:
+        assert paths.pid.read_text() == pid_contents
