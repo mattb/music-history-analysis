@@ -244,3 +244,79 @@ def test_remove_owned_runtime_files_preserves_socket_without_owned_pid(
     assert paths.socket.exists()
     if pid_contents is not None:
         assert paths.pid.read_text() == pid_contents
+
+
+def test_main_removes_runtime_paths_before_closing_server(tmp_path, monkeypatch):
+    paths = SessionPaths(
+        root=tmp_path,
+        socket=tmp_path / "lastfm.sock",
+        pid=tmp_path / "pid",
+        metadata=tmp_path / "metadata.json",
+    )
+    events = []
+    remove_runtime_files = session_daemon.remove_owned_runtime_files
+
+    class FakeState:
+        def load(self, _path):
+            pass
+
+        def metadata(self):
+            return {}
+
+    class FakeServer:
+        def __init__(self, socket_path, *_args):
+            Path(socket_path).touch()
+
+        def start_idle_watchdog(self):
+            pass
+
+        def serve_forever(self):
+            pass
+
+        def server_close(self):
+            events.append("close")
+
+        def shutdown(self):
+            pass
+
+    def record_cleanup(cleanup_paths, pid):
+        events.append("cleanup")
+        remove_runtime_files(cleanup_paths, pid)
+
+    monkeypatch.setattr(
+        "sys.argv", ["session-daemon", "--session-id", "test", "--csv", "input.csv"]
+    )
+    monkeypatch.setattr(session_daemon, "session_paths", lambda _session_id: paths)
+    monkeypatch.setattr(session_daemon, "socket_is_connectable", lambda _path: False)
+    monkeypatch.setattr(session_daemon, "AnalysisState", FakeState)
+    monkeypatch.setattr(session_daemon, "UnixAgentServer", FakeServer)
+    monkeypatch.setattr(session_daemon, "remove_owned_runtime_files", record_cleanup)
+    monkeypatch.setattr(session_daemon.signal, "signal", lambda *_args: None)
+
+    session_daemon.main()
+
+    assert events == ["cleanup", "close"]
+
+
+def test_remove_owned_runtime_files_unlinks_pid_before_socket():
+    events = []
+
+    class RecordingPath:
+        def __init__(self, name, contents=None):
+            self.name = name
+            self.contents = contents
+
+        def read_text(self):
+            return self.contents
+
+        def unlink(self):
+            events.append(self.name)
+
+    paths = SimpleNamespace(
+        pid=RecordingPath("pid", "123"),
+        socket=RecordingPath("socket"),
+    )
+
+    session_daemon.remove_owned_runtime_files(paths, 123)
+
+    assert events == ["pid", "socket"]

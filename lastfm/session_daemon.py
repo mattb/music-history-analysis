@@ -106,6 +106,7 @@ class UnixAgentServer(socketserver.UnixStreamServer):
 
 
 def remove_owned_runtime_files(paths: SessionPaths, pid: int) -> None:
+    """Remove runtime paths; call while the server still owns its bound socket."""
     try:
         recorded_pid = int(paths.pid.read_text())
     except (FileNotFoundError, OSError, ValueError):
@@ -115,11 +116,11 @@ def remove_owned_runtime_files(paths: SessionPaths, pid: int) -> None:
         return
 
     try:
-        paths.socket.unlink()
+        paths.pid.unlink()
     except FileNotFoundError:
         pass
     try:
-        paths.pid.unlink()
+        paths.socket.unlink()
     except FileNotFoundError:
         pass
 
@@ -183,8 +184,8 @@ def main() -> None:
         server.start_idle_watchdog()
         server.serve_forever()
     finally:
-        server.server_close()
         remove_owned_runtime_files(paths, os.getpid())
+        server.server_close()
 
 
 if __name__ == "__main__":
