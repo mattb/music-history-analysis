@@ -346,11 +346,17 @@ def persisted_session_csv(session_id: str) -> Path:
 
 
 @contextmanager
-def session_restart_lock(session_id: str) -> Iterator[SessionPaths]:
-    paths = session_paths(session_id)
+def session_paths_lock(paths: SessionPaths) -> Iterator[SessionPaths]:
     paths.restart_lock.parent.mkdir(parents=True, exist_ok=True)
     with paths.restart_lock.open("a") as lock_file:
         fcntl.flock(lock_file.fileno(), fcntl.LOCK_EX)
+        yield paths
+
+
+@contextmanager
+def session_restart_lock(session_id: str) -> Iterator[SessionPaths]:
+    paths = session_paths(session_id)
+    with session_paths_lock(paths):
         yield paths
 
 

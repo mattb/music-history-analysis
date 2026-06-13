@@ -1,6 +1,7 @@
 import errno
 import io
 import json
+import os
 import socket
 import threading
 import time
@@ -821,6 +822,47 @@ def test_real_daemon_csv_load_failure_is_structured_and_reaped(tmp_path, monkeyp
     assert lifecycle[-1]["event"] == "failed"
     assert lifecycle[-1]["code"] == "CSV_LOAD_FAILED"
     assert lifecycle[-1]["message"]
+    assert len(children) == 1
+    assert children[0].poll() is not None
+
+
+def test_real_server_start_failure_reports_before_cleanup_lock_and_reaps_child(
+    tmp_path, monkeypatch, sample_csv
+):
+    long_root = tmp_path / ("x" * 90)
+    (tmp_path / "sitecustomize.py").write_text(
+        "from lastfm.analysis_state import AnalysisState\n"
+        "AnalysisState._build_user_embeddings = lambda self: None\n"
+        "AnalysisState._build_critics_embeddings = lambda self: None\n"
+        "AnalysisState._build_critic_vectors = lambda self: None\n"
+    )
+    python_path = os.environ.get("PYTHONPATH")
+    monkeypatch.setenv(
+        "PYTHONPATH",
+        str(tmp_path) if not python_path else f"{tmp_path}{os.pathsep}{python_path}",
+    )
+    monkeypatch.setenv("LASTFM_SESSION_ROOT", str(long_root))
+    real_popen = session_client.subprocess.Popen
+    children = []
+
+    def capture_child(*args, **kwargs):
+        child = real_popen(*args, **kwargs)
+        children.append(child)
+        return child
+
+    monkeypatch.setattr(session_client.subprocess, "Popen", capture_child)
+    started_at = time.monotonic()
+
+    with session_client.session_restart_lock("overlong"):
+        with pytest.raises(session_client.SessionStartupError) as exc_info:
+            session_client._start_session_until_ready(
+                "overlong", sample_csv, startup_timeout_seconds=10
+            )
+
+    elapsed = time.monotonic() - started_at
+    assert exc_info.value.code == "DAEMON_START_FAILED"
+    assert "AF_UNIX path too long" in str(exc_info.value)
+    assert elapsed < 7
     assert len(children) == 1
     assert children[0].poll() is not None
 

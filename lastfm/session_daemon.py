@@ -16,8 +16,8 @@ from .agent_output import emit_event, error_envelope, success_envelope
 from .analysis_state import AnalysisState
 from .session_client import (
     SessionPaths,
+    session_paths_lock,
     session_paths,
-    session_restart_lock,
     socket_is_connectable,
 )
 
@@ -141,7 +141,7 @@ def cleanup_owned_runtime_files(
     server: UnixAgentServer | None = None,
 ) -> None:
     """Serialize daemon cleanup with restart and explicit session cleanup."""
-    with session_restart_lock(session_id):
+    with session_paths_lock(paths):
         remove_owned_runtime_files(paths, pid)
         if server is not None:
             server.server_close()
@@ -206,7 +206,6 @@ def main() -> None:
             str(paths.socket), AgentRequestHandler, state, args.session_id
         )
     except Exception as exc:
-        cleanup_owned_runtime_files(args.session_id, paths, os.getpid())
         message = f"Failed to start session server: {exc}"
         if args.json:
             emit_event(
@@ -217,6 +216,7 @@ def main() -> None:
             )
         else:
             print(message, file=sys.stderr)
+        cleanup_owned_runtime_files(args.session_id, paths, os.getpid())
         raise SystemExit(1) from None
 
     def shutdown(_signum, _frame) -> None:

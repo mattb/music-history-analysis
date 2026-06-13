@@ -8,6 +8,7 @@ from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
+import lastfm.session_client as session_client
 import lastfm.session_daemon as session_daemon
 
 from lastfm.session_daemon import (
@@ -423,7 +424,7 @@ def test_cleanup_waits_for_restart_and_preserves_successor_runtime(
     successor_written = threading.Event()
     cleanup_finished = threading.Event()
 
-    with session_daemon.session_restart_lock("race"):
+    with session_client.session_restart_lock("race"):
         cleanup = threading.Thread(
             target=lambda: (
                 session_daemon.cleanup_owned_runtime_files("race", paths, 111),
@@ -442,6 +443,32 @@ def test_cleanup_waits_for_restart_and_preserves_successor_runtime(
     assert cleanup_finished.is_set()
     assert paths.pid.read_text() == "222"
     assert paths.socket.read_text() == "successor"
+
+
+def test_cleanup_locks_supplied_session_paths_without_recomputing_root(
+    tmp_path, monkeypatch
+):
+    paths = SessionPaths(
+        root=tmp_path / "session",
+        socket=tmp_path / "session" / "lastfm.sock",
+        pid=tmp_path / "session" / "pid",
+        metadata=tmp_path / "session" / "metadata.json",
+        restart_lock=tmp_path / "isolated-locks" / "session.lock",
+    )
+    paths.root.mkdir()
+    paths.pid.write_text("111")
+    paths.socket.write_text("old")
+    monkeypatch.setattr(
+        session_client,
+        "session_paths",
+        lambda _session_id: pytest.fail("cleanup must not recompute session paths"),
+    )
+
+    session_daemon.cleanup_owned_runtime_files("session", paths, 111)
+
+    assert paths.restart_lock.exists()
+    assert not paths.pid.exists()
+    assert not paths.socket.exists()
 
 
 def test_restart_waits_for_cleanup_then_writes_successor_runtime(tmp_path, monkeypatch):
@@ -469,7 +496,7 @@ def test_restart_waits_for_cleanup_then_writes_successor_runtime(tmp_path, monke
     assert cleanup_holds_lock.wait(timeout=2)
 
     def restart():
-        with session_daemon.session_restart_lock("race"):
+        with session_client.session_restart_lock("race"):
             paths.pid.write_text("222")
             paths.socket.write_text("successor")
         restart_finished.set()
