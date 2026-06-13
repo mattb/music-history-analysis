@@ -139,19 +139,29 @@ def _period_payload(
     requested: list[_Interval],
     covered: list[_Interval],
     entity: str,
+    top_n: int,
 ) -> tuple[dict[str, Any], Counter[tuple[str, ...]]]:
     frame = _slice(df, covered)
     counts = _counts(frame, entity)
     requested_days = sum(item.days for item in requested)
     covered_days = sum(item.days for item in covered)
     plays = len(frame)
+    ranked_counts = sorted(counts.items(), key=lambda item: (-item[1], item[0]))
+    returned_counts = ranked_counts[:top_n]
     entity_counts = [
         {
             "key": list(key),
             "count": count,
             "share": _round(count / plays) if plays else 0.0,
         }
-        for key, count in sorted(counts.items(), key=lambda item: (-item[1], item[0]))
+        for key, count in returned_counts
+    ]
+    entity_shares = [
+        {
+            "key": list(key),
+            "share": _round(count / plays) if plays else 0.0,
+        }
+        for key, count in returned_counts
     ]
     payload = {
         "local_start": requested[0].local_start.isoformat(),
@@ -174,6 +184,9 @@ def _period_payload(
         "unique_albums": _unique_pairs(frame, "album"),
         "unique_tracks": _unique_pairs(frame, "track"),
         "entity_counts": entity_counts,
+        "entity_shares": entity_shares,
+        "total_entities": len(counts),
+        "entities_returned": len(returned_counts),
         "intervals": [
             {
                 "local_start": item.local_start.isoformat(),
@@ -187,27 +200,42 @@ def _period_payload(
     return payload, counts
 
 
-def build_intervals(spec: EventWindowSpec) -> dict[str, Interval]:
-    """Return the five requested half-open intervals in UTC."""
+def _requested_intervals(spec: EventWindowSpec) -> dict[str, _Interval]:
     zone = ZoneInfo(spec.timezone)
     event_start = spec.event_date
     assert isinstance(event_start, date)
-    pre_start = event_start - timedelta(days=spec.pre_days)
-    event_end = event_start + timedelta(days=spec.event_days)
-    post_end = event_end + timedelta(days=spec.post_days)
-    local = {
-        "baseline_before": _interval(
-            pre_start - timedelta(days=spec.baseline_days), pre_start, zone
-        ),
-        "pre": _interval(pre_start, event_start, zone),
-        "event": _interval(event_start, event_end, zone),
-        "post": _interval(event_end, post_end, zone),
-        "baseline_after": _interval(
-            post_end, post_end + timedelta(days=spec.baseline_days), zone
-        ),
-    }
+    try:
+        pre_start = event_start - timedelta(days=spec.pre_days)
+        event_end = event_start + timedelta(days=spec.event_days)
+        post_end = event_end + timedelta(days=spec.post_days)
+        local = {
+            "baseline_before": _interval(
+                pre_start - timedelta(days=spec.baseline_days), pre_start, zone
+            ),
+            "pre": _interval(pre_start, event_start, zone),
+            "event": _interval(event_start, event_end, zone),
+            "post": _interval(event_end, post_end, zone),
+            "baseline_after": _interval(
+                post_end, post_end + timedelta(days=spec.baseline_days), zone
+            ),
+        }
+    except OverflowError as exc:
+        raise ValueError("window bounds are unrepresentable as calendar dates") from exc
+    for name, interval in local.items():
+        if interval.utc_end <= interval.utc_start:
+            raise ValueError(
+                f"{name} interval must have positive UTC duration; "
+                "a requested local date may not exist in this timezone"
+            )
+    return local
+
+
+def build_intervals(spec: EventWindowSpec) -> dict[str, Interval]:
+    """Return the five requested half-open intervals in UTC."""
+    requested = _requested_intervals(spec)
     return {
-        name: Interval(value.utc_start, value.utc_end) for name, value in local.items()
+        name: Interval(value.utc_start, value.utc_end)
+        for name, value in requested.items()
     }
 
 
@@ -226,22 +254,7 @@ def compare_event_window(df: pd.DataFrame, spec: EventWindowSpec) -> dict[str, A
         raise ValueError("timestamp values must not be missing")
     source = source.sort_values("timestamp", kind="stable")
     zone = ZoneInfo(spec.timezone)
-    event_start = spec.event_date
-    assert isinstance(event_start, date)
-    pre_start = event_start - timedelta(days=spec.pre_days)
-    event_end = event_start + timedelta(days=spec.event_days)
-    post_end = event_end + timedelta(days=spec.post_days)
-    requested = {
-        "baseline_before": _interval(
-            pre_start - timedelta(days=spec.baseline_days), pre_start, zone
-        ),
-        "pre": _interval(pre_start, event_start, zone),
-        "event": _interval(event_start, event_end, zone),
-        "post": _interval(event_end, post_end, zone),
-        "baseline_after": _interval(
-            post_end, post_end + timedelta(days=spec.baseline_days), zone
-        ),
-    }
+    requested = _requested_intervals(spec)
 
     first_timestamp = source["timestamp"].iloc[0]
     last_timestamp = source["timestamp"].iloc[-1]
@@ -262,7 +275,7 @@ def compare_event_window(df: pd.DataFrame, spec: EventWindowSpec) -> dict[str, A
         requested_parts = [requested[name]]
         covered_parts = [covered[name]] if covered[name] is not None else []
         periods[name], period_counts[name] = _period_payload(
-            source, requested_parts, covered_parts, spec.entity
+            source, requested_parts, covered_parts, spec.entity, spec.top_n
         )
 
     baseline_requested = [requested["baseline_before"], requested["baseline_after"]]
@@ -272,7 +285,7 @@ def compare_event_window(df: pd.DataFrame, spec: EventWindowSpec) -> dict[str, A
         if item is not None
     ]
     periods["baseline"], period_counts["baseline"] = _period_payload(
-        source, baseline_requested, baseline_covered, spec.entity
+        source, baseline_requested, baseline_covered, spec.entity, spec.top_n
     )
 
     candidates: set[tuple[str, ...]] = set()
@@ -377,6 +390,13 @@ def compare_event_window(df: pd.DataFrame, spec: EventWindowSpec) -> dict[str, A
             "empty_periods": [
                 name for name in PERIOD_NAMES if not periods[name]["plays"]
             ],
+            "period_entities": {
+                name: {
+                    "total_entities": period["total_entities"],
+                    "entities_returned": period["entities_returned"],
+                }
+                for name, period in periods.items()
+            },
         },
     }
 

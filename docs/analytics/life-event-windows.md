@@ -52,7 +52,7 @@ r_{i,w} = \frac{O_{i,w}-E_{i,w}}{\sqrt{E_{i,w}}}
 
 The expectation is null when the baseline has no covered days. The residual is null when the expectation is null or zero. `post_minus_pre` reports both the count difference and share difference. `presence` records whether the entity appears in each comparison period. `first_ever_play_in_event_window` is true only when the entity's first timestamp in the full supplied history falls inside the covered event interval.
 
-The returned entity set is the union of the top `top_n` entities from `pre`, `event`, `post`, and `baseline`. Rows are sorted by descending absolute post-minus-pre share, then descending post count, then lexicographic entity key. Floating-point measurements are rounded to ten decimal places.
+Each period serializes only its top `top_n` `entity_counts` and `entity_shares`, ordered by descending count and then lexicographic key. Full counters remain internal to the calculations. `total_entities` and `entities_returned` appear on each period and in `diagnostics.period_entities`, making truncation explicit. The comparison entity set is still the union of the top `top_n` entities from `pre`, `event`, `post`, and `baseline`. Comparison rows are sorted by descending absolute post-minus-pre share, then descending post count, then lexicographic entity key. Floating-point measurements are rounded to ten decimal places.
 
 ## Schema version 1
 
@@ -64,7 +64,7 @@ The top-level result contains:
 - `entities`: counts, shares, post-minus-pre deltas, baseline expectations and residuals, presence flags, and first-play evidence.
 - `diagnostics`: source timestamp and local-date bounds, combined-baseline clipping, and empty requested periods.
 
-Each period includes requested and covered UTC boundaries, requested and covered local boundaries, day counts, plays and daily rate, unique counts, ranked `entity_counts`, and the covered interval parts. The combined baseline may contain two non-contiguous parts.
+Each period includes requested and covered UTC boundaries, requested and covered local boundaries, day counts, plays and daily rate, unique counts, bounded ranked `entity_counts` and `entity_shares`, truncation diagnostics, and the covered interval parts. The combined baseline may contain two non-contiguous parts. Window construction fails clearly if date arithmetic exceeds Python's representable calendar or a requested local-date interval has no positive UTC duration, as with a civil date skipped by a timezone transition.
 
 ## Worked example
 

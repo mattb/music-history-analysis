@@ -351,3 +351,89 @@ def test_schema_rounds_floats_to_ten_decimal_places():
     )
     row = next(row for row in result["entities"] if row["key"] == ["A"])
     assert row["shares"]["event"] == 0.3333333333
+
+
+def test_nonexistent_local_event_date_rejects_zero_duration_utc_interval():
+    df = plays(
+        ("2011-12-29T12:00:00Z", "before", "One", "x"),
+        ("2011-12-31T12:00:00Z", "after", "Two", "y"),
+    )
+    spec = EventWindowSpec(
+        date(2011, 12, 30),
+        timezone="Pacific/Apia",
+        pre_days=1,
+        event_days=1,
+        post_days=1,
+        baseline_days=1,
+    )
+    with pytest.raises(ValueError, match="event.*positive UTC duration"):
+        build_intervals(spec)
+    with pytest.raises(ValueError, match="event.*positive UTC duration"):
+        compare_event_window(df, spec)
+
+
+def test_unrepresentable_window_bounds_raise_clear_value_error():
+    spec = EventWindowSpec(
+        date.min,
+        pre_days=10**100,
+        event_days=1,
+        post_days=1,
+        baseline_days=1,
+    )
+    with pytest.raises(ValueError, match="window bounds.*unrepresentable"):
+        build_intervals(spec)
+
+
+def test_period_entity_payload_is_top_n_bounded_with_diagnostics_and_stable_ties():
+    df = plays(
+        ("2024-01-01T12:00:00Z", "base", "Base", "base"),
+        ("2024-01-02T10:00:00Z", "c", "C", "c"),
+        ("2024-01-02T11:00:00Z", "b", "B", "b"),
+        ("2024-01-02T12:00:00Z", "a", "A", "a"),
+        ("2024-01-03T12:00:00Z", "tail", "Tail", "tail"),
+    )
+    result = compare_event_window(
+        df,
+        EventWindowSpec(
+            date(2024, 1, 2),
+            pre_days=1,
+            event_days=1,
+            post_days=1,
+            baseline_days=1,
+            top_n=2,
+        ),
+    )
+    event = result["periods"]["event"]
+    assert [row["key"] for row in event["entity_counts"]] == [["a"], ["b"]]
+    assert [row["key"] for row in event["entity_shares"]] == [["a"], ["b"]]
+    assert event["total_entities"] == 3
+    assert event["entities_returned"] == 2
+    assert result["diagnostics"]["period_entities"]["event"] == {
+        "total_entities": 3,
+        "entities_returned": 2,
+    }
+
+
+def test_public_and_analysis_interval_boundaries_are_identical():
+    df = plays(
+        ("2024-03-01T08:00:00Z", "first", "One", "x"),
+        ("2024-03-20T07:00:00Z", "last", "Two", "y"),
+    )
+    spec = EventWindowSpec(
+        date(2024, 3, 10),
+        timezone="America/Los_Angeles",
+        pre_days=2,
+        event_days=1,
+        post_days=2,
+        baseline_days=3,
+    )
+    intervals = build_intervals(spec)
+    result = compare_event_window(df, spec)
+    for name, interval in intervals.items():
+        period = result["periods"][name]
+        assert period["requested_start_utc"] == interval.start.isoformat().replace(
+            "+00:00", "Z"
+        )
+        assert period["requested_end_utc"] == interval.end.isoformat().replace(
+            "+00:00", "Z"
+        )
