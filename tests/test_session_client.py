@@ -150,7 +150,6 @@ def test_restart_rejects_invalid_metadata_without_spawning(
     [
         ConnectionRefusedError("refused"),
         socket.timeout("timed out"),
-        json.JSONDecodeError("truncated", "{", 1),
         UnicodeDecodeError("utf-8", b"\xff", 0, 1, "invalid start byte"),
     ],
 )
@@ -169,6 +168,52 @@ def test_dispatch_recovers_from_stale_socket_transport_errors(monkeypatch, first
 
     assert session_client.dispatch_to_session("music-2025", "stats", {}) == {"ok": True}
     assert restarts == ["music-2025"]
+
+
+def assert_response_transport_recovery(
+    tmp_path, monkeypatch, first_response: bytes
+) -> None:
+    monkeypatch.setenv("LASTFM_SESSION_ROOT", str(tmp_path))
+    paths = session_paths("music-2025")
+    paths.root.mkdir(parents=True)
+    paths.socket.touch()
+    responses = iter([first_response, b'{"ok":true,"result":{"plays":42}}'])
+    restarts = []
+
+    class FakeSocket:
+        def __init__(self, *_args, **_kwargs):
+            self.chunks = iter([next(responses), b""])
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return None
+
+        def connect(self, _path):
+            pass
+
+        def sendall(self, _request):
+            pass
+
+        def recv(self, _size):
+            return next(self.chunks)
+
+    monkeypatch.setattr(session_client.socket, "socket", FakeSocket)
+    monkeypatch.setattr(session_client, "restart_session", restarts.append)
+
+    assert session_client.dispatch_to_session("music-2025", "stats", {}) == {
+        "plays": 42
+    }
+    assert restarts == ["music-2025"]
+
+
+def test_dispatch_recovers_from_invalid_json_response(tmp_path, monkeypatch):
+    assert_response_transport_recovery(tmp_path, monkeypatch, b"not-json")
+
+
+def test_dispatch_recovers_from_truncated_empty_response(tmp_path, monkeypatch):
+    assert_response_transport_recovery(tmp_path, monkeypatch, b"")
 
 
 def test_concurrent_restarts_spawn_one_daemon(tmp_path, monkeypatch):
@@ -264,6 +309,83 @@ def test_start_session_json_forwards_startup_events_until_ready(
     assert popen_kwargs["stdout"] == session_client.subprocess.PIPE
     assert popen_kwargs["stderr"] == session_client.subprocess.DEVNULL
     assert popen_kwargs["text"] is True
+
+
+def test_start_session_non_json_returns_detached_process_immediately(
+    tmp_path, monkeypatch
+):
+    monkeypatch.setenv("LASTFM_SESSION_ROOT", str(tmp_path))
+    popen_calls = []
+    fake_process = object()
+
+    def fake_popen(cmd, **kwargs):
+        popen_calls.append((cmd, kwargs))
+        return fake_process
+
+    monkeypatch.setattr(session_client.subprocess, "Popen", fake_popen)
+    monkeypatch.setattr(
+        session_client,
+        "_start_session_until_ready",
+        lambda *_args, **_kwargs: pytest.fail(
+            "detached startup must not wait for ready"
+        ),
+    )
+
+    process = start_session(
+        "music-2025", tmp_path / "recenttracks-test.csv", json_output=False
+    )
+
+    assert process is fake_process
+    assert len(popen_calls) == 1
+    cmd, kwargs = popen_calls[0]
+    assert "--json" not in cmd
+    assert kwargs == {
+        "stdin": session_client.subprocess.DEVNULL,
+        "stdout": session_client.subprocess.DEVNULL,
+        "stderr": session_client.subprocess.DEVNULL,
+        "start_new_session": True,
+    }
+
+
+def test_start_session_until_ready_is_silent_without_event_stream(
+    tmp_path, monkeypatch, capsys
+):
+    popen_commands = []
+
+    class FakeStdout:
+        def __init__(self):
+            self.lines = iter(['{"event":"start"}\n', '{"event":"ready"}\n'])
+            self.closed = False
+
+        def readline(self):
+            return next(self.lines, "")
+
+        def close(self):
+            self.closed = True
+
+    class FakeProcess:
+        def __init__(self):
+            self.stdout = FakeStdout()
+
+        def poll(self):
+            return None
+
+    fake_process = FakeProcess()
+
+    def fake_popen(cmd, **_kwargs):
+        popen_commands.append(cmd)
+        return fake_process
+
+    monkeypatch.setattr(session_client.subprocess, "Popen", fake_popen)
+
+    process = session_client._start_session_until_ready(
+        "music-2025", tmp_path / "recenttracks-test.csv", event_stream=None
+    )
+
+    assert process is fake_process
+    assert "--json" in popen_commands[0]
+    assert fake_process.stdout.closed is True
+    assert capsys.readouterr().out == ""
 
 
 def test_start_session_refuses_existing_reachable_session(tmp_path, monkeypatch):
