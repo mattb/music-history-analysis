@@ -276,21 +276,38 @@ def test_listening_change_points_cli_forwards_all_options(monkeypatch):
 
 
 @pytest.mark.parametrize(
-    "options",
+    ("options", "message"),
     [
-        ["--frequency", "day"],
-        ["--vector-mode", "raw"],
-        ["--top-artists", "0"],
-        ["--min-segment-bins", "0"],
-        ["--top-deltas", "0"],
-        ["--penalty-multiplier", "nan"],
+        (["--frequency", "day"], "frequency must be week or month"),
+        (["--vector-mode", "raw"], "vector_mode must be shares or counts"),
+        (["--top-artists", "0"], "top_artists must be a positive integer"),
+        (["--min-segment-bins", "0"], "min_segment_bins must be a positive integer"),
+        (["--top-deltas", "0"], "top_deltas must be a positive integer"),
+        (
+            ["--penalty-multiplier", "nan"],
+            "penalty_multiplier must be finite and positive",
+        ),
     ],
 )
-def test_listening_change_points_cli_rejects_invalid_options(options):
-    result = runner.invoke(
-        app, ["listening-change-points", "--session", "live", *options]
+def test_listening_change_points_cli_invalid_options_are_json_errors(
+    tmp_path, options, message
+):
+    csv = tmp_path / "recenttracks-invalid.csv"
+    csv.write_text(
+        "uts,utc_time,artist,artist_mbid,album,album_mbid,track,track_mbid\n"
+        "1704067200,2024-01-01 00:00:00,A,,,,,\n"
     )
-    assert result.exit_code == 2
+    result = runner.invoke(
+        app, ["listening-change-points", "--csv", str(csv), *options]
+    )
+    assert result.exit_code == 1
+    payload = json.loads(result.output)
+    assert payload["ok"] is False
+    assert payload["error"] == {
+        "code": "VALUEERROR",
+        "message": message,
+        "retryable": False,
+    }
 
 
 def test_listening_change_points_real_one_shot_and_unix_socket_parity(
@@ -348,6 +365,51 @@ def test_listening_change_points_real_one_shot_and_unix_socket_parity(
         json.loads(one_shot.output)["result"]["change_points"][0]["timestamp"]
         == "2024-04-01T00:00:00Z"
     )
+
+
+def test_listening_change_points_socket_failure_matches_one_shot(tmp_path, monkeypatch):
+    import datetime
+    import tempfile
+
+    import lastfm.session_client
+    from lastfm import data
+    from lastfm.analysis_state import AnalysisState
+    from lastfm.session_daemon import AgentRequestHandler, UnixAgentServer
+
+    csv = tmp_path / "recenttracks-short.csv"
+    rows = []
+    for month, artist in enumerate(["A", "B", "A"], 1):
+        uts = int(datetime.datetime(2024, month, 1, tzinfo=datetime.UTC).timestamp())
+        rows.append(f"{uts},2024-{month:02d}-01 00:00:00,{artist},,,,,")
+    csv.write_text(
+        "uts,utc_time,artist,artist_mbid,album,album_mbid,track,track_mbid\n"
+        + "\n".join(rows)
+    )
+    root = tempfile.mkdtemp(prefix="lastfm-change-error-", dir="/tmp")
+    monkeypatch.setenv("LASTFM_SESSION_ROOT", root)
+    paths = lastfm.session_client.session_paths("change-error")
+    paths.root.mkdir(parents=True)
+    state = AnalysisState()
+    state.csv_path = csv
+    state.df = data.load_scrobbles(csv)
+    server = UnixAgentServer(
+        str(paths.socket), AgentRequestHandler, state, "change-error"
+    )
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        one_shot = runner.invoke(app, ["listening-change-points", "--csv", str(csv)])
+        session = runner.invoke(
+            app, ["listening-change-points", "--session", "change-error"]
+        )
+    finally:
+        server.shutdown()
+        server.server_close()
+        thread.join(timeout=2)
+        shutil.rmtree(root)
+    assert one_shot.exit_code == session.exit_code == 1
+    assert json.loads(one_shot.output)["error"] == json.loads(session.output)["error"]
+    assert json.loads(session.output)["error"]["code"] == "VALUEERROR"
 
 
 def test_session_start_help_documents_lifecycle():

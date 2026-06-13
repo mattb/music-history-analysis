@@ -7,8 +7,8 @@ import pytest
 from lastfm.change_points import (
     ChangePointSpec,
     PrefixSSE,
-    analyze_change_points,
     bin_artist_counts,
+    detect_change_points,
     optimal_partition,
     transform_vectors,
 )
@@ -44,10 +44,21 @@ def test_spec_rejects_invalid_values_and_bool_or_fractional_counts():
 
 def test_computed_penalty_must_remain_finite():
     with pytest.raises(ValueError, match="computed penalty"):
-        analyze_change_points(
+        detect_change_points(
             plays([["A"]] * 3 + [["B"]] * 3),
             ChangePointSpec(min_segment_bins=2, penalty_multiplier=1.7e308),
         )
+
+
+def test_spec_rejects_huge_integer_penalty_cleanly():
+    with pytest.raises(ValueError, match="penalty_multiplier"):
+        ChangePointSpec(penalty_multiplier=10**10000)
+
+
+def test_nat_timestamp_is_rejected_cleanly():
+    frame = pd.DataFrame({"timestamp": [pd.NaT], "artist": ["A"]})
+    with pytest.raises(ValueError, match="NaT"):
+        detect_change_points(frame, ChangePointSpec(min_segment_bins=1))
 
 
 def test_month_bins_are_utc_continuous_and_reconcile_with_other():
@@ -69,6 +80,28 @@ def test_month_bins_are_utc_continuous_and_reconcile_with_other():
     ]
     assert binned.artists == ["A", "__OTHER__"]
     assert binned.counts.tolist() == [[0, 1], [0, 0], [1, 1]]
+    assert int(binned.counts.sum()) == len(frame)
+
+
+def test_real_artist_named_other_is_escaped_from_synthetic_bucket():
+    frame = pd.DataFrame(
+        {
+            "timestamp": pd.to_datetime(
+                [
+                    "2024-01-01T00:00Z",
+                    "2024-01-02T00:00Z",
+                    "2024-01-03T00:00Z",
+                    "2024-02-01T00:00Z",
+                ]
+            ),
+            "artist": ["__OTHER__", "__OTHER__", "A", "B"],
+        }
+    )
+    binned = bin_artist_counts(
+        frame, ChangePointSpec(top_artists=2, min_segment_bins=1)
+    )
+    assert binned.artists == ["\\__OTHER__", "A", "__OTHER__"]
+    assert binned.counts.tolist() == [[2, 1, 0], [0, 0, 1]]
     assert int(binned.counts.sum()) == len(frame)
 
 
@@ -132,18 +165,18 @@ def test_dp_ties_choose_fewer_then_lexicographically_earliest_boundaries():
 
 def test_constant_series_short_circuits_length_validation_and_nonconstant_does_not():
     constant = plays([["A"]] * 3)
-    result = analyze_change_points(constant, ChangePointSpec(min_segment_bins=6))
+    result = detect_change_points(constant, ChangePointSpec(min_segment_bins=6))
     assert result["diagnostics"]["constant_series"] is True
     assert result["change_points"] == []
     with pytest.raises(ValueError, match="at least 12 bins"):
-        analyze_change_points(
+        detect_change_points(
             plays([["A"], ["B"], ["A"]]), ChangePointSpec(min_segment_bins=6)
         )
 
 
 def test_schema_reconciles_segments_deltas_and_has_no_interpretive_fields():
     frame = plays([["A"]] * 3 + [["B", "B"]] * 3)
-    result = analyze_change_points(
+    result = detect_change_points(
         frame,
         ChangePointSpec(min_segment_bins=2, penalty_multiplier=0.01, top_deltas=1),
     )
@@ -178,13 +211,13 @@ def test_schema_reconciles_segments_deltas_and_has_no_interpretive_fields():
 
 def test_analysis_is_stable_under_row_shuffle_and_penalty_is_monotone():
     frame = plays([["A"]] * 3 + [["B"]] * 3 + [["A"]] * 3)
-    low = analyze_change_points(
+    low = detect_change_points(
         frame, ChangePointSpec(min_segment_bins=2, penalty_multiplier=0.01)
     )
-    high = analyze_change_points(
+    high = detect_change_points(
         frame, ChangePointSpec(min_segment_bins=2, penalty_multiplier=100)
     )
-    shuffled = analyze_change_points(
+    shuffled = detect_change_points(
         frame.sample(frac=1, random_state=3),
         ChangePointSpec(min_segment_bins=2, penalty_multiplier=0.01),
     )

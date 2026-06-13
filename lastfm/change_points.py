@@ -29,10 +29,14 @@ class ChangePointSpec:
             if isinstance(value, bool) or not isinstance(value, int) or value <= 0:
                 raise ValueError(f"{field} must be a positive integer")
         value = self.penalty_multiplier
+        try:
+            finite_penalty = math.isfinite(value)
+        except (OverflowError, TypeError):
+            finite_penalty = False
         if (
             isinstance(value, bool)
             or not isinstance(value, (int, float))
-            or not math.isfinite(value)
+            or not finite_penalty
             or value <= 0
         ):
             raise ValueError("penalty_multiplier must be finite and positive")
@@ -49,6 +53,8 @@ class BinnedCounts:
 
 def _utc_timestamp(value: Any) -> pd.Timestamp:
     timestamp = pd.Timestamp(value)
+    if pd.isna(timestamp):
+        raise ValueError("timestamp must not be NaT")
     if timestamp.tzinfo is None:
         return timestamp.tz_localize("UTC")
     return timestamp.tz_convert("UTC")
@@ -70,6 +76,13 @@ def _next_bin(timestamp: pd.Timestamp, frequency: str) -> pd.Timestamp:
 def _iso(timestamp: pd.Timestamp) -> str:
     value = _utc_timestamp(timestamp).isoformat()
     return value.replace("+00:00", "Z")
+
+
+def _external_artist_label(artist: str) -> str:
+    """Reserve __OTHER__ by injectively escaping conflicting real names."""
+    if artist == "__OTHER__" or artist.startswith("\\"):
+        return f"\\{artist}"
+    return artist
 
 
 def bin_artist_counts(frame: pd.DataFrame, spec: ChangePointSpec) -> BinnedCounts:
@@ -95,7 +108,7 @@ def bin_artist_counts(frame: pd.DataFrame, spec: ChangePointSpec) -> BinnedCount
             : spec.top_artists
         ]
     ]
-    artists = vocabulary + ["__OTHER__"]
+    artists = [_external_artist_label(artist) for artist in vocabulary] + ["__OTHER__"]
     row_index = {value: index for index, value in enumerate(starts)}
     column_index = {value: index for index, value in enumerate(vocabulary)}
     counts = np.zeros((len(starts), len(artists)), dtype=np.int64)
@@ -208,10 +221,9 @@ def _rounded(value: float) -> float:
     return round(float(value), 10)
 
 
-def analyze_change_points(
-    frame: pd.DataFrame, spec: ChangePointSpec | None = None
+def _analyze_change_points(
+    frame: pd.DataFrame, spec: ChangePointSpec
 ) -> dict[str, Any]:
-    spec = spec or ChangePointSpec()
     binned = bin_artist_counts(frame, spec)
     vectors, vector_metadata = transform_vectors(binned.counts, spec.vector_mode)
     constant = bool(np.allclose(vectors, vectors[0], atol=1e-12, rtol=0))
@@ -337,8 +349,6 @@ def analyze_change_points(
     }
 
 
-def detect_change_points(
-    frame: pd.DataFrame, spec: ChangePointSpec | None = None
-) -> dict[str, Any]:
-    """Public alias for the change-point analysis contract."""
-    return analyze_change_points(frame, spec)
+def detect_change_points(frame: pd.DataFrame, spec: ChangePointSpec) -> dict[str, Any]:
+    """Detect listening change points using an explicit specification."""
+    return _analyze_change_points(frame, spec)

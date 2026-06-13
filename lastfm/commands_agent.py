@@ -83,9 +83,9 @@ def _run_agent_command(command: str, session: str | None, csv: Path | None, para
     except Exception as exc:
         print_json(error_envelope(
             command=command,
-            code=type(exc).__name__.upper(),
+            code=getattr(exc, "code", type(exc).__name__.upper()),
             message=str(exc),
-            retryable=False,
+            retryable=getattr(exc, "retryable", False),
             session_id=session,
         ))
         raise typer.Exit(1)
@@ -145,21 +145,6 @@ def register(app: typer.Typer) -> None:
             True, "--json", help="Emit structured JSON on stdout."
         ),
     ):
-        if frequency not in {"week", "month"}:
-            raise typer.BadParameter(
-                "frequency must be week or month", param_hint="--frequency"
-            )
-        if vector_mode not in {"shares", "counts"}:
-            raise typer.BadParameter(
-                "vector-mode must be shares or counts", param_hint="--vector-mode"
-            )
-        if top_artists <= 0 or min_segment_bins <= 0 or top_deltas <= 0:
-            raise typer.BadParameter("count options must be positive")
-        if not math.isfinite(penalty_multiplier) or penalty_multiplier <= 0:
-            raise typer.BadParameter(
-                "penalty-multiplier must be finite and positive",
-                param_hint="--penalty-multiplier",
-            )
         _run_agent_command(
             "listening-change-points",
             session,

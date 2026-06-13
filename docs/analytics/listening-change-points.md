@@ -8,6 +8,8 @@ All timestamps are converted to UTC. Monthly bins begin at 00:00 on the first da
 
 Artists are ranked by total plays, descending, then by artist name, ascending. The first `top_artists` become explicit dimensions; all remaining plays enter `__OTHER__`. Every play therefore contributes to exactly one bin and one dimension.
 
+`__OTHER__` is reserved for the synthetic bucket. A real artist with that exact name is reported as `\__OTHER__`; real artist names already beginning with `\` gain one additional leading `\`. This deterministic escaping is injective, so vocabulary entries and deltas remain unambiguous.
+
 ## Vectors
 
 For share vectors, let \(c_{ti}\) be plays for artist dimension \(i\) in bin \(t\), and \(C_t = \sum_i c_{ti}\). The vector is

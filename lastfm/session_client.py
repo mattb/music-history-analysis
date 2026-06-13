@@ -21,6 +21,15 @@ class SessionPaths:
     metadata: Path
 
 
+class RemoteAgentError(RuntimeError):
+    """An error envelope returned by a daemon session."""
+
+    def __init__(self, code: str, message: str, retryable: bool):
+        super().__init__(message)
+        self.code = code
+        self.retryable = retryable
+
+
 def session_root() -> Path:
     return Path(
         os.environ.get(
@@ -95,10 +104,14 @@ def session_process_is_verified(session_id: str) -> bool:
 
 def session_is_live(session_id: str) -> bool:
     paths = session_paths(session_id)
-    return socket_is_connectable(paths.socket) or session_process_is_verified(session_id)
+    return socket_is_connectable(paths.socket) or session_process_is_verified(
+        session_id
+    )
 
 
-def start_session(session_id: str, csv_path: Path, json_output: bool = True) -> subprocess.Popen:
+def start_session(
+    session_id: str, csv_path: Path, json_output: bool = True
+) -> subprocess.Popen:
     paths = session_paths(session_id)
     paths.root.mkdir(parents=True, exist_ok=True)
     if socket_is_connectable(paths.socket):
@@ -143,8 +156,12 @@ def start_session(session_id: str, csv_path: Path, json_output: bool = True) -> 
             if not line:
                 returncode = process.poll()
                 if returncode is None:
-                    raise RuntimeError(f"Session {session_id} closed startup output before ready")
-                raise RuntimeError(f"Session {session_id} exited before ready with code {returncode}")
+                    raise RuntimeError(
+                        f"Session {session_id} closed startup output before ready"
+                    )
+                raise RuntimeError(
+                    f"Session {session_id} exited before ready with code {returncode}"
+                )
 
             sys.stdout.write(line)
             sys.stdout.flush()
@@ -220,5 +237,10 @@ def dispatch_to_session(session_id: str, command: str, params: dict[str, Any]) -
 
     response = json.loads(b"".join(chunks).decode())
     if not response.get("ok"):
-        raise RuntimeError(response.get("error", {}).get("message", "Session command failed"))
+        error = response.get("error", {})
+        raise RemoteAgentError(
+            code=error.get("code", "REMOTE_ERROR"),
+            message=error.get("message", "Session command failed"),
+            retryable=bool(error.get("retryable", False)),
+        )
     return response["result"]
