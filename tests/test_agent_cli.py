@@ -1,5 +1,7 @@
 import json
 
+import pytest
+
 from typer.testing import CliRunner
 
 from lastfm.cli import app
@@ -154,6 +156,99 @@ def test_listening_graph_cli_validates_parameters(sample_csv):
     )
     assert years.exit_code == 2
     assert "start-year" in years.output
+
+
+def test_listening_graph_cli_rejects_invalid_format_and_both_targets(sample_csv):
+    invalid_format = runner.invoke(
+        app, ["listening-graph", "--csv", str(sample_csv), "--format", "gexf"]
+    )
+    assert invalid_format.exit_code == 2
+    assert "json or graphml" in invalid_format.output
+    both = runner.invoke(
+        app,
+        ["listening-graph", "--csv", str(sample_csv), "--session", "live"],
+    )
+    assert both.exit_code == 2
+    assert "exactly one" in both.output
+
+
+@pytest.mark.parametrize(
+    "option",
+    [
+        "--gap-minutes",
+        "--min-artist-plays",
+        "--min-shared-sessions",
+        "--community-resolution",
+        "--betweenness-samples",
+        "--hops",
+    ],
+)
+def test_listening_graph_cli_rejects_nonpositive_options(sample_csv, option):
+    result = runner.invoke(
+        app, ["listening-graph", "--csv", str(sample_csv), option, "0"]
+    )
+    assert result.exit_code == 2
+    assert "positive" in result.output
+
+
+def test_listening_graph_cli_forwards_every_option(monkeypatch):
+    import lastfm.commands_agent
+
+    captured = {}
+
+    def fake_run(command, session, csv, params):
+        captured.update(command=command, session=session, csv=csv, params=params)
+
+    monkeypatch.setattr(lastfm.commands_agent, "_run_agent_command", fake_run)
+    result = runner.invoke(
+        app,
+        [
+            "listening-graph",
+            "--session",
+            "live",
+            "--gap-minutes",
+            "45",
+            "--min-artist-plays",
+            "2",
+            "--min-shared-sessions",
+            "3",
+            "--start-year",
+            "2020",
+            "--end-year",
+            "2024",
+            "--community-resolution",
+            "1.5",
+            "--community-seed",
+            "7",
+            "--betweenness-samples",
+            "12",
+            "--artist",
+            "Artist A",
+            "--hops",
+            "2",
+            "--format",
+            "graphml",
+        ],
+    )
+    assert result.exit_code == 0
+    assert captured == {
+        "command": "listening-graph",
+        "session": "live",
+        "csv": None,
+        "params": {
+            "gap_minutes": 45,
+            "min_artist_plays": 2,
+            "min_shared_sessions": 3,
+            "start_year": 2020,
+            "end_year": 2024,
+            "community_resolution": 1.5,
+            "community_seed": 7,
+            "betweenness_samples": 12,
+            "focus_artist": "Artist A",
+            "hops": 2,
+            "output_format": "graphml",
+        },
+    }
 
 
 def test_listening_graph_help_lists_graph_options():

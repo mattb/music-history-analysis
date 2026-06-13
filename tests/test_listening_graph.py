@@ -128,6 +128,53 @@ def test_metrics_cover_communities_centrality_and_participation():
     assert graph_metrics(reverse, config()) == metrics
 
 
+def test_disconnected_cliques_have_distinct_deterministic_communities():
+    graph = nx.Graph()
+    graph.add_edges_from([("a", "b"), ("a", "c"), ("b", "c")])
+    graph.add_edges_from([("d", "e"), ("d", "f"), ("e", "f")])
+    nx.set_edge_attributes(graph, 1, "weight")
+    nx.set_edge_attributes(graph, 1.0, "distance")
+    first = graph_metrics(graph, config())
+    assert first == graph_metrics(graph.copy(), config())
+    assert {first[node]["community_id"] for node in "abc"} == {0}
+    assert {first[node]["community_id"] for node in "def"} == {1}
+
+
+def test_exact_metrics_and_weighted_distance_behavior():
+    path = nx.Graph()
+    path.add_edge("a", "b", weight=1, distance=1.0)
+    path.add_edge("b", "c", weight=1, distance=1.0)
+    metrics = graph_metrics(path, config())
+    assert metrics["b"]["degree"] == 2
+    assert metrics["b"]["strength"] == 2
+    assert metrics["b"]["degree_centrality"] == 1.0
+    assert metrics["b"]["closeness_centrality"] == 1.0
+    assert metrics["a"]["closeness_centrality"] == pytest.approx(2 / 3)
+
+    weighted = nx.Graph()
+    weighted.add_edge("a", "b", weight=10, distance=0.1)
+    weighted.add_edge("b", "c", weight=10, distance=0.1)
+    weighted.add_edge("a", "c", weight=1, distance=1.0)
+    assert graph_metrics(weighted, config())["b"]["betweenness_centrality"] == 1.0
+
+
+def test_participation_is_nonzero_across_communities():
+    graph = nx.Graph()
+    for source, target in [
+        ("a", "b"),
+        ("a", "c"),
+        ("b", "c"),
+        ("d", "e"),
+        ("d", "f"),
+        ("e", "f"),
+    ]:
+        graph.add_edge(source, target, weight=5, distance=0.2)
+    graph.add_edge("c", "d", weight=1, distance=1.0)
+    metrics = graph_metrics(graph, config())
+    assert metrics["c"]["community_id"] != metrics["d"]["community_id"]
+    assert metrics["c"]["participation_coefficient"] > 0
+
+
 def test_json_schema_edges_neighborhood_and_graphml():
     frame = rows(
         [
@@ -157,6 +204,41 @@ def test_json_schema_edges_neighborhood_and_graphml():
     assert set(parsed) == {"name:a", "name:b", "name:c"}
     with pytest.raises(ValueError, match="focus artist not found"):
         analyze_listening_graph(frame, config(), focus_artist="missing")
+
+
+def test_compact_json_is_stable_and_floats_are_rounded_to_twelve_places():
+    frame = rows(
+        [
+            ("2024-01-01T00:00:00Z", "A", ""),
+            ("2024-01-01T00:01:00Z", "B", ""),
+            ("2024-01-01T01:00:00Z", "A", ""),
+            ("2024-01-01T02:00:00Z", "B", ""),
+        ]
+    )
+    first = analyze_listening_graph(frame, config())
+    second = analyze_listening_graph(frame.sample(frac=1, random_state=9), config())
+    serialized = json.dumps(first, separators=(",", ":"), allow_nan=False)
+    assert serialized == json.dumps(second, separators=(",", ":"), allow_nan=False)
+    assert first["edges"][0]["jaccard"] == 0.333333333333
+
+
+@pytest.mark.parametrize(
+    ("kwargs", "message"),
+    [
+        ({"hops": 0}, "hops must be positive"),
+        ({"output_format": "gexf"}, "output_format must be json or graphml"),
+    ],
+)
+def test_invalid_analysis_options(kwargs, message):
+    with pytest.raises(ValueError, match=message):
+        analyze_listening_graph(rows([]), config(), **kwargs)
+
+
+def test_public_graph_builders_validate_positive_config():
+    with pytest.raises(ValueError, match="gap_minutes must be positive"):
+        build_session_graph(rows([]), config(gap_minutes=0))
+    with pytest.raises(ValueError, match="betweenness_samples must be positive"):
+        graph_metrics(nx.Graph(), config(betweenness_samples=0))
 
 
 @pytest.mark.parametrize(

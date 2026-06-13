@@ -27,15 +27,46 @@ def test_get_top_artists(monkeypatch, sample_csv):
     ]
 
 
-def test_dispatch_listening_graph(monkeypatch, sample_csv):
+def test_dispatch_listening_graph_forwards_every_option(monkeypatch, sample_csv):
     state = loaded_lightweight_state(monkeypatch, sample_csv)
+    captured = {}
+
+    def fake_analyze(df, config, **kwargs):
+        captured.update(df=df, config=config, kwargs=kwargs)
+        return {"graph_type": "artist_session_cooccurrence"}
+
+    monkeypatch.setattr("lastfm.listening_graph.analyze_listening_graph", fake_analyze)
     result = dispatch(
         state,
         "listening-graph",
         {
-            "min_artist_plays": 1,
-            "min_shared_sessions": 1,
+            "gap_minutes": 45,
+            "min_artist_plays": 2,
+            "min_shared_sessions": 3,
+            "start_year": 2020,
+            "end_year": 2024,
+            "community_resolution": 1.5,
+            "community_seed": 7,
+            "betweenness_samples": 12,
+            "focus_artist": "Artist A",
+            "hops": 2,
+            "output_format": "graphml",
         },
     )
     assert result["graph_type"] == "artist_session_cooccurrence"
-    assert result["summary"]["nodes"] == 3
+    assert captured["df"] is state.df
+    assert captured["config"].__dict__ == {
+        "gap_minutes": 45,
+        "min_artist_plays": 2,
+        "min_shared_sessions": 3,
+        "start_year": 2020,
+        "end_year": 2024,
+        "community_resolution": 1.5,
+        "community_seed": 7,
+        "betweenness_samples": 12,
+    }
+    assert captured["kwargs"] == {
+        "focus_artist": "Artist A",
+        "hops": 2,
+        "output_format": "graphml",
+    }

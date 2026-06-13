@@ -26,14 +26,13 @@ class GraphConfig:
     betweenness_samples: int = 100
 
 
-def _validate(config: GraphConfig, hops: int, output_format: str) -> None:
+def _validate_config(config: GraphConfig) -> None:
     positive = {
         "gap_minutes": config.gap_minutes,
         "min_artist_plays": config.min_artist_plays,
         "min_shared_sessions": config.min_shared_sessions,
         "community_resolution": config.community_resolution,
         "betweenness_samples": config.betweenness_samples,
-        "hops": hops,
     }
     for name, value in positive.items():
         if value <= 0:
@@ -41,6 +40,12 @@ def _validate(config: GraphConfig, hops: int, output_format: str) -> None:
     if config.start_year is not None and config.end_year is not None:
         if config.start_year > config.end_year:
             raise ValueError("start_year must not exceed end_year")
+
+
+def _validate(config: GraphConfig, hops: int, output_format: str) -> None:
+    _validate_config(config)
+    if hops <= 0:
+        raise ValueError("hops must be positive")
     if output_format not in {"json", "graphml"}:
         raise ValueError("output_format must be json or graphml")
 
@@ -61,6 +66,7 @@ def build_session_graph(
     df: pd.DataFrame, config: GraphConfig
 ) -> tuple[nx.Graph, dict[str, int]]:
     """Build a graph after time filtering and whole-stream session detection."""
+    _validate_config(config)
     filtered = df.copy()
     if "timestamp" not in filtered:
         filtered["timestamp"] = pd.Series(dtype="datetime64[ns, UTC]")
@@ -135,6 +141,7 @@ def build_session_graph(
 
 def graph_metrics(graph: nx.Graph, config: GraphConfig) -> dict[str, dict[str, Any]]:
     """Calculate communities and unlabelled structural measurements."""
+    _validate_config(config)
     if not graph:
         return {}
     canonical = nx.Graph()
