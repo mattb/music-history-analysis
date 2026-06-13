@@ -14,7 +14,7 @@ from pathlib import Path
 from . import agent_tools
 from .agent_output import emit_event, error_envelope, success_envelope
 from .analysis_state import AnalysisState
-from .session_client import session_paths, socket_is_connectable
+from .session_client import SessionPaths, session_paths, socket_is_connectable
 
 
 DEFAULT_IDLE_TIMEOUT_SECONDS = 30 * 60
@@ -92,6 +92,36 @@ class UnixAgentServer(socketserver.UnixStreamServer):
         self.idle_tracker = IdleTracker(idle_timeout_seconds, clock)
         super().__init__(socket_path, handler)
 
+    def start_idle_watchdog(self, check_interval_seconds=1.0) -> threading.Thread:
+        def watch_for_expiration() -> None:
+            while True:
+                time.sleep(check_interval_seconds)
+                if self.idle_tracker.is_expired():
+                    self.shutdown()
+                    return
+
+        thread = threading.Thread(target=watch_for_expiration, daemon=True)
+        thread.start()
+        return thread
+
+
+def remove_owned_runtime_files(paths: SessionPaths, pid: int) -> None:
+    try:
+        paths.socket.unlink()
+    except FileNotFoundError:
+        pass
+
+    try:
+        recorded_pid = int(paths.pid.read_text())
+    except (FileNotFoundError, OSError, ValueError):
+        return
+
+    if recorded_pid == pid:
+        try:
+            paths.pid.unlink()
+        except FileNotFoundError:
+            pass
+
 
 def main() -> None:
     parser = argparse.ArgumentParser()
@@ -149,11 +179,11 @@ def main() -> None:
         emit_event("ready", session_id=args.session_id, socket=str(paths.socket))
 
     try:
+        server.start_idle_watchdog()
         server.serve_forever()
     finally:
         server.server_close()
-        if paths.socket.exists():
-            paths.socket.unlink()
+        remove_owned_runtime_files(paths, os.getpid())
 
 
 if __name__ == "__main__":

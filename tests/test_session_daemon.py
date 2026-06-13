@@ -2,10 +2,12 @@ import io
 import json
 import shutil
 import tempfile
+import threading
 from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
+import lastfm.session_daemon as session_daemon
 
 from lastfm.session_daemon import (
     DEFAULT_IDLE_TIMEOUT_SECONDS,
@@ -13,6 +15,7 @@ from lastfm.session_daemon import (
     IdleTracker,
     UnixAgentServer,
 )
+from lastfm.session_client import SessionPaths
 
 
 class FakeClock:
@@ -161,3 +164,62 @@ def test_unix_agent_server_preserves_original_constructor(socket_path):
         assert isinstance(server.idle_tracker, IdleTracker)
     finally:
         server.server_close()
+
+
+def test_idle_watchdog_shuts_down_server_and_exits(socket_path):
+    server = UnixAgentServer(
+        str(socket_path),
+        AgentRequestHandler,
+        object(),
+        "test-session",
+        idle_timeout_seconds=0.05,
+    )
+    server_thread = threading.Thread(target=server.serve_forever)
+    server_thread.start()
+    watchdog_thread = server.start_idle_watchdog(check_interval_seconds=0.01)
+
+    server_thread.join(timeout=1)
+    watchdog_thread.join(timeout=1)
+
+    try:
+        assert not server_thread.is_alive()
+        assert not watchdog_thread.is_alive()
+    finally:
+        server.shutdown()
+        server.server_close()
+
+
+def test_remove_owned_runtime_files_removes_socket_and_owned_pid(tmp_path):
+    paths = SessionPaths(
+        root=tmp_path,
+        socket=tmp_path / "lastfm.sock",
+        pid=tmp_path / "pid",
+        metadata=tmp_path / "metadata.json",
+    )
+    paths.socket.write_text("socket")
+    paths.pid.write_text("123")
+    paths.metadata.write_text('{"session_id": "test-session"}')
+
+    session_daemon.remove_owned_runtime_files(paths, 123)
+
+    assert not paths.socket.exists()
+    assert not paths.pid.exists()
+    assert paths.metadata.exists()
+
+
+def test_remove_owned_runtime_files_preserves_different_pid(tmp_path):
+    paths = SessionPaths(
+        root=tmp_path,
+        socket=tmp_path / "lastfm.sock",
+        pid=tmp_path / "pid",
+        metadata=tmp_path / "metadata.json",
+    )
+    paths.socket.write_text("socket")
+    paths.pid.write_text("456")
+    paths.metadata.write_text('{"session_id": "test-session"}')
+
+    session_daemon.remove_owned_runtime_files(paths, 123)
+
+    assert not paths.socket.exists()
+    assert paths.pid.read_text() == "456"
+    assert paths.metadata.exists()
