@@ -215,8 +215,8 @@ def optimal_partition(
                 objectives[start] + costs.cost(start, end) + (penalty if start else 0.0)
             )
             candidate_changes = change_counts[start] + (1 if start else 0)
-            better = candidate_objective < objectives[end] - 1e-12
-            if abs(candidate_objective - objectives[end]) <= 1e-12:
+            better = candidate_objective < objectives[end]
+            if candidate_objective == objectives[end]:
                 better = candidate_changes < change_counts[end] or (
                     candidate_changes == change_counts[end]
                     and candidate_is_earlier(start, predecessors[end])

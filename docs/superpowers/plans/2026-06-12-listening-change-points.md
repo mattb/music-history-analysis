@@ -240,8 +240,8 @@ def segment(x: np.ndarray, minimum: int, penalty: float) -> tuple[list[int], flo
             tie_breaks_earlier = current is None or (
                 len(candidate), candidate
             ) < (len(current), current)
-            if value < best[end] - 1e-12 or (
-                abs(value - best[end]) <= 1e-12 and tie_breaks_earlier
+            if value < best[end] or (
+                value == best[end] and tie_breaks_earlier
             ):
                 best[end], paths[end] = value, candidate
     if paths[n] is None:
@@ -249,7 +249,7 @@ def segment(x: np.ndarray, minimum: int, penalty: float) -> tuple[list[int], flo
     return list(paths[n]), float(best[n])
 ```
 
-Because `best[start]` is populated only for feasible prefixes and `end - start >= minimum` is enforced by the loop bounds, every segment satisfies the minimum. Tests must include cases that would otherwise leave a short first or middle segment. When objective values tie, compare number of boundaries first, then boundary tuples lexicographically.
+Because `best[start]` is populated only for feasible prefixes and `end - start >= minimum` is enforced by the loop bounds, every segment satisfies the minimum. Tests must include cases that would otherwise leave a short first or middle segment. Order finite float objectives exactly so Bellman comparisons remain transitive. Only when objective values are exactly equal, compare number of boundaries first, then boundary sequences lexicographically using deterministic backpointers.
 
 - [ ] **Step 4: Run tests and commit**
 

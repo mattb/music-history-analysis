@@ -180,11 +180,7 @@ def _exhaustive_partition(matrix, penalty, minimum):
             )
             candidates.append((objective, boundaries))
     best_value = min(value for value, _ in candidates)
-    tied = [
-        boundaries
-        for value, boundaries in candidates
-        if abs(value - best_value) <= 1e-12
-    ]
+    tied = [boundaries for value, boundaries in candidates if value == best_value]
     best_boundaries = min(tied, key=lambda value: (len(value), value))
     return list(best_boundaries), best_value
 
@@ -202,6 +198,29 @@ def test_dp_matches_exhaustive_randomized_small_series():
             boundaries, objective = optimal_partition(matrix, penalty, minimum)
             assert boundaries == expected_boundaries
             assert objective == pytest.approx(expected_objective)
+
+
+def test_dp_exact_objective_ordering_handles_scaled_counterexample():
+    matrix = np.array([[-1e-6, -2e-6], [-1e-6, 0.0], [1e-6, -1e-6]])
+    boundaries, objective = optimal_partition(matrix, penalty=1e-12, min_segment_bins=1)
+    assert boundaries == [1, 2]
+    assert objective == 2e-12
+
+
+def test_dp_matches_exact_exhaustive_ordering_for_small_floating_series():
+    rng = np.random.default_rng(8675309)
+    for scale in (1e-7, 1.0, 1e7):
+        for n in range(3, 8):
+            for _ in range(12):
+                matrix = rng.normal(size=(n, 2)) * scale
+                minimum = int(rng.integers(1, n // 2 + 1))
+                penalty = float(rng.choice([0.0, 0.1, 2.0])) * scale**2
+                expected_boundaries, expected_objective = _exhaustive_partition(
+                    matrix, penalty, minimum
+                )
+                boundaries, objective = optimal_partition(matrix, penalty, minimum)
+                assert boundaries == expected_boundaries
+                assert objective == pytest.approx(expected_objective)
 
 
 def test_dp_uses_scalar_backpointers_not_stored_boundary_tuples():

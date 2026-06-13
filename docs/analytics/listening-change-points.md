@@ -36,7 +36,7 @@ Prefix sums of vectors and squared norms make each segment-cost query \(O(d)\), 
 \sum_j SSE(s_j,s_{j+1}) + \beta K,
 \]
 
-where \(K\) is the number of change points and every segment has at least `min_segment_bins` bins. The algorithm is exact, not greedy. Within \(10^{-12}\), ties prefer fewer boundaries and then the lexicographically earliest boundary sequence.
+where \(K\) is the number of change points and every segment has at least `min_segment_bins` bins. The algorithm is exact, not greedy. Finite float objectives use exact ordering. Only exactly equal objectives invoke the deterministic tie rules: fewer boundaries, then the lexicographically earliest boundary sequence.
 
 Noise variance is estimated from adjacent squared vector distances divided by twice the number of active dimensions. The median is used; if it is zero but positive estimates exist, the smallest positive estimate is used. The penalty is
 
