@@ -29,7 +29,9 @@ def _validate_history(df: pd.DataFrame) -> pd.DataFrame:
     if result["timestamp"].isna().any():
         raise ValueError("listening history contains invalid timestamps")
     result["artist"] = result["artist"].fillna("").astype(str)
-    return result.sort_values(["timestamp", "artist"], kind="stable")
+    return result.sort_values(["timestamp", "artist"], kind="stable").reset_index(
+        drop=True
+    )
 
 
 def _frequency(granularity: str) -> str:

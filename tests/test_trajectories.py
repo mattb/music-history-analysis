@@ -101,6 +101,22 @@ def test_batch_validates_history_once(monkeypatch):
     assert calls == 1
 
 
+def test_batch_artist_index_uses_positions_when_input_labels_are_duplicated():
+    frame = history([("2024-01-01", "A"), ("2024-01-02", "B")])
+    frame.index = [0, 0]
+
+    result = artist_trajectories(frame, ["B", "A"])
+
+    assert [item["artist"] for item in result["artists"]] == ["B", "A"]
+    assert [item["summary"]["total_plays"] for item in result["artists"]] == [1, 1]
+    assert [
+        [row["plays"] for row in item["timeline"]] for item in result["artists"]
+    ] == [
+        [1],
+        [1],
+    ]
+
+
 def test_minimum_activity_threshold_changes_active_metrics_not_play_counts():
     frame = history([("2024-01-01", "A"), ("2024-02-01", "A"), ("2024-02-02", "A")])
     result = artist_trajectory(frame, "A", min_period_plays=2)
