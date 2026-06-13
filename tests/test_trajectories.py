@@ -313,6 +313,70 @@ def test_inactivity_censoring_uses_active_threshold_not_nonzero_plays():
     assert result["observation"]["trailing_inactivity_censored"] is True
 
 
+def test_observation_boundary_flags_have_consistent_meanings():
+    frame = history(
+        [
+            ("2024-01-01", "A"),
+            ("2024-03-01", "A"),
+        ]
+    )
+    truncated = artist_trajectory(frame, "A", end="2024-02")
+    assert truncated["observation"]["right_truncated"] is True
+    assert truncated["observation"]["right_censored"] is False
+
+    natural = artist_trajectory(frame, "A")
+    assert natural["observation"]["right_truncated"] is False
+    assert natural["observation"]["right_censored"] is True
+
+    extended = artist_trajectory(frame, "A", end="2024-04")
+    assert extended["observation"]["right_truncated"] is False
+    assert extended["observation"]["right_censored"] is True
+
+    cohort_truncated = cohort_retention(frame, end="2024-02", offsets=[1])
+    assert cohort_truncated["observation"]["right_truncated"] is True
+    assert cohort_truncated["observation"]["right_censored"] is False
+
+
+def test_any_later_activity_checks_precomputed_qualifying_periods():
+    frame = history(
+        [
+            ("2024-01-01", "A"),
+            ("2024-02-01", "A"),  # below threshold
+            ("2024-03-01", "A"),
+            ("2024-03-02", "A"),  # qualifying later period
+            ("2024-01-02", "B"),
+            ("2024-02-02", "B"),  # never qualifying later
+        ]
+    )
+    result = cohort_retention(frame, min_active_plays=2, offsets=[1, 2])
+    assert result["cohorts"][0]["any_later_activity"] == {"count": 1, "rate": 0.5}
+
+
+@pytest.mark.parametrize(
+    ("function", "kwargs"),
+    [
+        (artist_trajectory, {"min_period_plays": True}),
+        (artist_trajectory, {"min_period_plays": float("nan")}),
+        (artist_trajectory, {"min_period_plays": 1.5}),
+        (artist_trajectory, {"dormancy_periods": False}),
+        (artist_trajectory, {"dormancy_periods": 2.5}),
+        (cohort_retention, {"min_discovery_plays": True}),
+        (cohort_retention, {"min_discovery_plays": float("nan")}),
+        (cohort_retention, {"min_active_plays": 1.5}),
+        (cohort_retention, {"offsets": [True]}),
+        (cohort_retention, {"offsets": [1.5]}),
+        (cohort_retention, {"offsets": [float("nan")]}),
+    ],
+)
+def test_count_parameters_require_strict_integers(function, kwargs):
+    frame = history([("2024-01-01", "A")])
+    with pytest.raises(ValueError, match="integer"):
+        if function is artist_trajectory:
+            function(frame, "A", **kwargs)
+        else:
+            function(frame, **kwargs)
+
+
 @pytest.mark.parametrize(
     "kwargs",
     [

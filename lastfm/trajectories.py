@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import re
+from collections import defaultdict
 from collections.abc import Iterable, Sequence
 from statistics import median
 from typing import Any
@@ -74,6 +75,22 @@ def _safe_float(value: float) -> float:
     return round(float(value), 12)
 
 
+def _positive_integer(value: Any, name: str) -> int:
+    if (
+        isinstance(value, bool)
+        or not isinstance(value, (int, np.integer))
+        or value <= 0
+    ):
+        raise ValueError(f"{name} must be a positive integer")
+    return int(value)
+
+
+def _nonnegative_integer(value: Any, name: str) -> int:
+    if isinstance(value, bool) or not isinstance(value, (int, np.integer)) or value < 0:
+        raise ValueError(f"{name} must be a nonnegative integer")
+    return int(value)
+
+
 def _observation(
     start: pd.Period,
     end: pd.Period,
@@ -95,7 +112,8 @@ def _observation(
         "source_start_period": str(source_start),
         "source_end_period": str(source_end),
         "left_truncated": bool(start > source_start),
-        "right_censored": bool(end < source_end),
+        "right_truncated": bool(end < source_end),
+        "right_censored": bool(end >= source_end),
         "leading_inactivity_periods": leading,
         "trailing_inactivity_periods": trailing,
         "leading_inactivity_censored": leading > 0,
@@ -117,8 +135,8 @@ def artist_trajectory(
     freq = _frequency(granularity)
     if not isinstance(artist, str) or not artist:
         raise ValueError("artist must be nonempty")
-    if min_period_plays <= 0 or dormancy_periods <= 0:
-        raise ValueError("thresholds must be positive")
+    min_period_plays = _positive_integer(min_period_plays, "min_period_plays")
+    dormancy_periods = _positive_integer(dormancy_periods, "dormancy_periods")
     first, last, source_start, source_end = _window(frame, granularity, start, end)
     periods = pd.period_range(first, last, freq=freq)
     parameters = {
@@ -330,14 +348,14 @@ def cohort_retention(
     frame = _validate_history(df)
     cohort_freq = _frequency(cohort_granularity)
     activity_freq = _frequency(activity_granularity)
-    if min_discovery_plays <= 0 or min_active_plays <= 0:
-        raise ValueError("thresholds must be positive")
+    min_discovery_plays = _positive_integer(min_discovery_plays, "min_discovery_plays")
+    min_active_plays = _positive_integer(min_active_plays, "min_active_plays")
     offset_values = list(offsets)
-    if not offset_values or any(
-        not isinstance(value, int) or value < 0 for value in offset_values
-    ):
+    if not offset_values:
         raise ValueError("offsets must be nonempty nonnegative integers")
-    offset_values = sorted(set(offset_values))
+    offset_values = sorted(
+        {_nonnegative_integer(value, "offset") for value in offset_values}
+    )
     first, last, source_start, source_end = _window(
         frame, cohort_granularity, start, end
     )
@@ -356,6 +374,10 @@ def cohort_retention(
     discovery_cohorts = first_rows["cohort_period"]
     discovery_activity_periods = first_rows["activity_period"]
     activity_counts = normalized.groupby(["identity", "activity_period"]).size()
+    qualifying_periods: dict[str, list[pd.Period]] = defaultdict(list)
+    for (identity, period), count in activity_counts.items():
+        if int(count) >= min_active_plays:
+            qualifying_periods[identity].append(period)
     requested_activity_end = last.end_time.to_period(activity_freq)
     source_activity_end = normalized["activity_period"].max()
     report_activity_end = min(requested_activity_end, source_activity_end)
@@ -373,16 +395,13 @@ def cohort_retention(
             int(activity_counts[(identity, discovery_activity_periods[identity])])
             for identity in members
         ]
-        later_count = 0
-        for identity in members:
-            first_activity = discovery_activity_periods[identity]
-            later_counts = [
-                int(count)
-                for (artist_identity, period), count in activity_counts.items()
-                if artist_identity == identity
-                and first_activity < period <= report_activity_end
-            ]
-            later_count += any(count >= min_active_plays for count in later_counts)
+        later_count = sum(
+            any(
+                discovery_activity_periods[identity] < period <= report_activity_end
+                for period in qualifying_periods.get(identity, ())
+            )
+            for identity in members
+        )
         cells = []
         for offset in offset_values:
             eligible_members = [
@@ -453,8 +472,8 @@ def cohort_retention(
             "source_end_period": str(source_end),
             "last_observable_activity_period": str(report_activity_end),
             "left_truncated": bool(first > source_start),
-            "right_truncated": bool(last < source_end),
-            "right_censored": bool(requested_activity_end > source_activity_end),
+            "right_truncated": bool(requested_activity_end < source_activity_end),
+            "right_censored": bool(requested_activity_end >= source_activity_end),
             "source_artists": int(normalized["identity"].nunique()),
         },
         "cohorts": cohorts,

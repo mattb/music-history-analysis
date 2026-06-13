@@ -8,7 +8,7 @@ Artist identity is an exact Unicode-casefolded name. There is no fuzzy, substrin
 
 Month bins use `YYYY-MM`; year bins use `YYYY`. Bounds are inclusive. Explicit bounds create leading and trailing zero bins, and all periods are UTC pandas calendar periods. `first_play` and `last_play` are the exact timestamps inside the observation window, not period boundaries.
 
-Observation diagnostics distinguish report truncation from inactivity censoring. `left_truncated` and `right_censored` say that requested bounds omit source periods. Leading and trailing inactive runs are separately marked as censored: without activity on both sides, they are not dormancy episodes.
+Observation diagnostics distinguish report truncation from horizon censoring. `left_truncated` is true when the caller's start follows the source start. `right_truncated` is true when the caller's end precedes the available source end; known later source data was deliberately omitted. `right_censored` is true when the caller's end reaches or extends beyond the source end; activity after the source horizon cannot be observed. Thus `right_truncated` and `right_censored` are complementary. Leading and trailing inactive runs are separately marked as censored: without threshold-active bins on both sides, they are not dormancy episodes.
 
 ## Activity, span, peak, and ramp
 
@@ -36,17 +36,17 @@ The return is the first active bin after the dormant run. Each return reports pl
 
 ## Discovery cohorts and point retention
 
-An artist belongs to the cohort containing its first-ever activity in the full input history, even when report bounds begin later. It enters only if first-cohort plays meet `min_discovery_plays`. Cohort results never include artist names.
+Let \(d_i\) be artist \(i\)'s first-ever activity-granularity period in the full input history. The artist's cohort label is the cohort-granularity period containing \(d_i\), even when report bounds begin later. The artist enters that cohort only if plays in \(d_i\) meet `min_discovery_plays`. Cohort results never include artist names.
 
 For cohort \(c\), activity-period offset \(k\), and threshold \(q\), point retention is:
 
 \[
-R_{c,k}=\frac{\#\{i \in c:p_{i,c+k}\ge q\}}{\#\{i \in c:c+k\text{ is observable}\}}
+R_{c,k}=\frac{\#\{i \in c:d_i+k\le h\;\land\;p_{i,d_i+k}\ge q\}}{\#\{i \in c:d_i+k\le h\}}
 \]
 
-This is activity in the exact target period, not cumulative activity. Artists whose target period is beyond the inclusive report window are right-censored and excluded from the denominator. A cell with no eligible artists has a null rate, never zero. Offsets are unique, nonnegative, and sorted; defaults are 1, 3, 6, 12, and 24.
+Here, \(h\) is the last observable activity period: the earlier of the requested end and actual source coverage. Each artist's target is its own \(d_i+k\), not the cohort boundary plus \(k\). This is activity in the exact target period, not cumulative activity. Artists whose targets lie after \(h\) are right-censored and excluded from the denominator. A cell with no eligible artists has a null rate, never zero. Offsets are unique, nonnegative, and sorted; defaults are 1, 3, 6, 12, and 24.
 
-Each cohort also reports size, mean and median first-period plays, and the count/share with any later activity inside the report window. Empty cohorts remain in the dense output with null aggregates. Diagnostics report source coverage, report truncation, total/nonempty cohorts, and cohort membership counts.
+Each cohort also reports size, mean and median plays in the members' respective \(d_i\) periods, and the count/share with any later activity period meeting `min_active_plays` through \(h\). Empty cohorts remain in the dense output with null aggregates. Diagnostics report source coverage, report truncation, total/nonempty cohorts, and cohort membership counts.
 
 ## Trajectory output schema
 
