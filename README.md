@@ -2,7 +2,7 @@
 
 Music History is a Codex plugin for analyzing listening history with a local Python CLI. It helps Codex turn Last.fm scrobbles, Spotify exports, critics lists, and MusicBrainz metadata into evidence-backed music analysis, playlists, taste maps, and narrative drafts.
 
-This README is for colleagues who want to install the plugin in Codex and run it against their own data.
+This README is for people who want their agent to install the plugin in Codex and run it against their own data.
 
 ## Install
 
