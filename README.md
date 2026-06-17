@@ -6,14 +6,14 @@ This README is for colleagues who want to install the plugin in Codex and run it
 
 ## Install
 
-Clone this repository into `~/plugins/music-history`, then run the bundled installer. It registers the standard user-wide `local-plugins` marketplace, adds this checkout to that marketplace, and installs the plugin into Codex's active cache.
+Clone this repository into `~/plugins/music-history`, then run the bundled installer. It installs the `music-history` CLI as an editable `uv` tool with a stable tool environment, registers the standard user-wide `local-plugins` marketplace, adds this checkout to that marketplace, and installs the plugin into Codex's active cache.
 
 ```bash
 git clone https://github.com/mattb/music-history-analysis.git ~/plugins/music-history
 python3 ~/plugins/music-history/scripts/install_codex_plugin.py
 ```
 
-The installer is idempotent and preserves other entries in `~/.agents/plugins/marketplace.json`. To refresh after pulling repository updates, run it again:
+The installer requires `uv` and `codex` on `PATH`. It is idempotent, preserves other entries in `~/.agents/plugins/marketplace.json`, and refreshes both the CLI tool and Codex plugin. After pulling repository updates, run it again:
 
 ```bash
 git -C ~/plugins/music-history pull
@@ -32,7 +32,7 @@ $music-history-cli-journalism First confirm this skill is available. Then walk m
 
 ## Local Setup
 
-Install the Python environment with `uv` from the repo root:
+The installer exposes the CLI on `PATH`. For development or tests, also sync the repo-local environment:
 
 ```bash
 uv sync

@@ -25,6 +25,11 @@ def parse_args() -> argparse.Namespace:
         default="codex",
         help="Codex executable to invoke.",
     )
+    parser.add_argument(
+        "--uv",
+        default="uv",
+        help="uv executable used to install the CLI tool.",
+    )
     return parser.parse_args()
 
 
@@ -81,6 +86,13 @@ def run_codex(codex: str, *args: str) -> None:
     subprocess.run([codex, *args], check=True)
 
 
+def install_cli(uv: str, repo_root: Path) -> None:
+    subprocess.run(
+        [uv, "tool", "install", "--editable", "--force", str(repo_root)],
+        check=True,
+    )
+
+
 def main() -> None:
     args = parse_args()
     repo_root = Path(__file__).resolve().parents[1]
@@ -90,12 +102,14 @@ def main() -> None:
     if not manifest.is_file():
         raise SystemExit(f"missing plugin manifest: {manifest}")
 
+    install_cli(args.uv, repo_root)
     marketplace_path = update_marketplace(repo_root, home)
     run_codex(args.codex, "plugin", "marketplace", "add", str(home))
     run_codex(args.codex, "plugin", "add", f"{PLUGIN_NAME}@{MARKETPLACE_NAME}")
 
     print(f"Marketplace: {marketplace_path}")
     print(f"Installed: {PLUGIN_NAME}@{MARKETPLACE_NAME}")
+    print("CLI: music-history")
 
 
 if __name__ == "__main__":
