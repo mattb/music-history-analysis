@@ -1,4 +1,4 @@
-"""Plain agent-callable Last.fm analysis tools."""
+"""Plain agent-callable Music History analysis tools."""
 
 from __future__ import annotations
 
@@ -1008,7 +1008,7 @@ def get_listening_by_release_era(
     # Check MusicBrainz availability
     db_stats = musicbrainz_db.get_database_stats()
     if not db_stats or not db_stats.get("has_full_schema"):
-        return {"error": "MusicBrainz database not available. Run: lastfm metadata download"}
+        return {"error": "MusicBrainz database not available. Run: music-history metadata download"}
 
     conn = sqlite3.connect(musicbrainz_db.MUSICBRAINZ_DB)
 
@@ -2008,7 +2008,7 @@ def get_ep_single_artists(state: AnalysisState, year: Optional[int] = None) -> d
     if not musicbrainz_db.database_exists():
         return {
             "error": "MusicBrainz database not found",
-            "setup": "Run 'lastfm metadata download' to enable release type lookups",
+            "setup": "Run 'music-history metadata download' to enable release type lookups",
         }
 
     df = state.df

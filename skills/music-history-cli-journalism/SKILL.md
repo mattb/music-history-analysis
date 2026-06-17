@@ -1,15 +1,15 @@
 ---
-name: lastfm-cli-journalism
-description: Use when turning a Last.fm listening-history repo and its agent-native lastfm CLI into narrative music analysis, playlist drafts, critic-alignment stories, release-era investigations, evidence-based interview questions, music taste graphs, or intersection Venn diagrams.
+name: music-history-cli-journalism
+description: Use when turning a Last.fm listening-history repo and its agent-native music-history CLI into narrative music analysis, playlist drafts, critic-alignment stories, release-era investigations, evidence-based interview questions, music taste graphs, or intersection Venn diagrams.
 ---
 
-# Last.fm CLI Journalism
+# Music History CLI Journalism
 
-Use this skill to investigate listening history as source material for music-data journalism. The goal is not to memorize commands or dump statistics; it is to use the repo's `lastfm` CLI to gather evidence, form a story, and deliver the artifact the user asked for.
+Use this skill to investigate listening history as source material for music-data journalism. The goal is not to memorize commands or dump statistics; it is to use the repo's `music-history` CLI to gather evidence, form a story, and deliver the artifact the user asked for.
 
 ## Start With The CLI Contract
 
-1. Run `lastfm --help` from the repo context.
+1. Run `music-history --help` from the repo context.
 2. Run command-specific `--help` for the small set of commands that match the question.
 3. Prefer the live help output over remembered syntax.
 4. Use the newest auto-detected `recenttracks-*.csv` unless the user names a CSV or time window that requires another source.

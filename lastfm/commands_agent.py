@@ -385,7 +385,7 @@ def register(app: typer.Typer) -> None:
                 typer.echo(f"Error: {exc}", err=True)
             raise typer.Exit(1)
 
-    @app.command("session-list", help="List known Last.fm daemon sessions.")
+    @app.command("session-list", help="List known Music History daemon sessions.")
     def session_list(json_output: bool = typer.Option(True, "--json", help="Emit structured JSON.")):
         payload = success_envelope("session-list", {"sessions": list_sessions()}, session_id=None)
         if json_output:

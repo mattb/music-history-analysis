@@ -14,7 +14,7 @@ from rich.progress import Progress, DownloadColumn, TransferSpeedColumn, BarColu
 console = Console()
 
 # Local database location
-CACHE_DIR = Path.home() / ".cache" / "lastfm-analysis"
+CACHE_DIR = Path.home() / ".cache" / "music-history-analysis"
 MUSICBRAINZ_DB = CACHE_DIR / "musicbrainz_releases.db"
 
 # MusicBrainz JSON dump URL
@@ -48,7 +48,7 @@ def get_connection() -> sqlite3.Connection:
     if not database_exists():
         raise FileNotFoundError(
             f"MusicBrainz database not found at {MUSICBRAINZ_DB}. "
-            "Run 'lastfm metadata download' first."
+            "Run 'music-history metadata download' first."
         )
     return sqlite3.connect(MUSICBRAINZ_DB)
 

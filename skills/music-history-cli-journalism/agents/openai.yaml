@@ -1,0 +1,4 @@
+interface:
+  display_name: "Music History CLI Journalism"
+  short_description: "Music narratives and visual taste maps from CLI data"
+  default_prompt: "Use $music-history-cli-journalism to turn my listening data into an evidence-backed narrative, music graph, or intersection Venn diagram."

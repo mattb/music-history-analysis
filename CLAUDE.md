@@ -18,13 +18,13 @@ This is a CLI tool for deep analysis of Last.fm listening history, cross-referen
 **Option A: Built-in API Downloader (Recommended)**
 ```bash
 # 1. Get API key from https://www.last.fm/api/account/create
-lastfm fetch-api-key --key YOUR_API_KEY
+music-history fetch-api-key --key YOUR_API_KEY
 
 # 2. Download all scrobbles
-lastfm fetch YOUR_USERNAME
+music-history fetch YOUR_USERNAME
 
 # 3. Or download only from a specific year onwards (useful for updates)
-lastfm fetch YOUR_USERNAME --start-year 2024
+music-history fetch YOUR_USERNAME --start-year 2024
 
 # Creates: recenttracks-USERNAME-TIMESTAMP.csv
 ```
@@ -37,7 +37,7 @@ lastfm fetch YOUR_USERNAME --start-year 2024
 - Supports `--start-year` to fetch only recent scrobbles (faster updates)
 
 **Option B: External Export Website**
-- Use lastfm-to-csv or similar third-party tool
+- Use a Last.fm CSV exporter or similar third-party tool
 - Place CSV in project root as `recenttracks-*.csv`
 
 **CSV Format:**
@@ -50,12 +50,12 @@ lastfm fetch YOUR_USERNAME --start-year 2024
 - **Cache**: `critics-YYYY.json` in project root (per year)
 - **Scraper**: `lastfm/crawler.py` - uses httpx + BeautifulSoup
 - **Structure**: List of `{critic, publication, albums: [{artist, title, rank}]}`
-- **Refresh**: `lastfm critics fetch --year YYYY`
+- **Refresh**: `music-history critics fetch --year YYYY`
 
 ### 3. MusicBrainz Metadata (Enrichment)
 - **Source**: MusicBrainz JSON data dumps (https://data.metabrainz.org)
-- **Dump cache**: `~/.cache/lastfm-analysis/musicbrainz-release-YYYYMMDD-HHMMSS.tar.xz` (~2-3GB)
-- **Local DB**: `~/.cache/lastfm-analysis/musicbrainz_releases.db` (SQLite, ~1GB)
+- **Dump cache**: `~/.cache/music-history-analysis/musicbrainz-release-YYYYMMDD-HHMMSS.tar.xz` (~2-3GB)
+- **Local DB**: `~/.cache/music-history-analysis/musicbrainz_releases.db` (SQLite, ~1GB)
 - **Contains**: Release year, genres, labels, country, language, release type, artist MBID
 - **Schema**:
   ```sql
@@ -64,25 +64,25 @@ lastfm fetch YOUR_USERNAME --start-year 2024
   release_genres (release_id, genre, count)
   release_labels (release_id, label_name, catalog_number)
   ```
-- **Setup**: `lastfm download-musicbrainz` (first run downloads ~3GB, subsequent runs use cache)
+- **Setup**: `music-history download-musicbrainz` (first run downloads ~3GB, subsequent runs use cache)
 - **Re-process**: Just re-run the command (uses cached dump, rebuilds DB)
-- **Force re-download**: `lastfm download-musicbrainz --force`
+- **Force re-download**: `music-history download-musicbrainz --force`
 - **Why local**: MusicBrainz API rate-limits to 1 req/sec; local DB is instant
 
 ### 4. Release Year Cache (Incremental)
-- **Location**: `~/.cache/lastfm-analysis/release_years.json`
+- **Location**: `~/.cache/music-history-analysis/release_years.json`
 - **Purpose**: Cache release years from both local DB and API lookups
 - **Keys**: Either MusicBrainz MBID or `"artist|||album"` lowercase
 
 ### 5. Spotify API (Optional)
 - **Purpose**: Create playlists from recommendations
-- **Credentials**: `~/.cache/lastfm-analysis/spotify_credentials.json`
-- **Setup**: `lastfm spotify auth --client-id X --client-secret Y`
+- **Credentials**: `~/.cache/music-history-analysis/spotify_credentials.json`
+- **Setup**: `music-history spotify auth --client-id X --client-secret Y`
 
 ### 6. Spotify Streaming History (Alternative to Last.fm)
 - **Source**: Request "Extended streaming history" from https://www.spotify.com/account/privacy/
 - **Format**: JSON files named `Streaming_History_Audio_*.json`
-- **Convert**: `lastfm spotify convert <directory> --output scrobbles.csv`
+- **Convert**: `music-history spotify convert <directory> --output scrobbles.csv`
 - **Fields preserved**: Core Last.fm-compatible columns + extended Spotify data (ms_played, shuffle, platform, etc.)
 - **Filters applied**: 30+ second plays only, skipped tracks excluded by default
 - **Usage**: After conversion, use `--csv spotify-scrobbles.csv` with any command
@@ -99,7 +99,7 @@ lastfm fetch YOUR_USERNAME --start-year 2024
 | `metadata` commands | Works with fallbacks | First run may be slower (API calls) |
 
 **Tips for Spotify users:**
-- Run `lastfm metadata download` first for best performance
+- Run `music-history metadata download` first for best performance
 - Genre/label/country coverage depends on MusicBrainz having the release
 - All core analysis features work identically to Last.fm data
 
@@ -152,13 +152,13 @@ Albums get a score from 0.0 to 1.0 based on three weighted components:
 **Global option**: `--familiarity` or `-f` (default: 0.4)
 ```bash
 # Default threshold (0.4)
-lastfm critics matched
+music-history critics matched
 
 # Stricter threshold (only well-known albums)
-lastfm --familiarity 0.6 critics matched
+music-history --familiarity 0.6 critics matched
 
 # More permissive (include casual listens)
-lastfm --familiarity 0.2 critics matched
+music-history --familiarity 0.2 critics matched
 ```
 
 ### Legacy Binary 5x5 Rule
@@ -250,29 +250,29 @@ for y in years_to_search:
 **Filtering to a specific year:**
 ```bash
 # All years (default)
-lastfm critics who-listed "Charli XCX"  # Shows 2013-2024
+music-history critics who-listed "Charli XCX"  # Shows 2013-2024
 
 # Single year
-lastfm --year 2024 critics who-listed "Charli XCX"  # Only 2024
+music-history --year 2024 critics who-listed "Charli XCX"  # Only 2024
 ```
 
 ## CLI Commands Reference
 
-**Global Options**: `lastfm [--csv PATH] [--year YYYY] [--familiarity F] COMMAND`
+**Global Options**: `music-history [--csv PATH] [--year YYYY] [--familiarity F] COMMAND`
 - `--csv, -c`: Path to Last.fm or Spotify CSV export (auto-detects `recenttracks-*.csv` if not specified)
 - `--year, -y`: Filter to specific year (defaults to 2025)
 - `--familiarity, -f`: Album familiarity threshold 0-1 (default: 0.4). See "Album Listening Criteria"
 - `--verbose, -v`: Verbose output
 
 ### Root Commands
-- `lastfm fetch-api-key [--key KEY]` - Set up Last.fm API key for downloading scrobbles
-- `lastfm fetch <username> [--output PATH] [--start-year YEAR]` - Download scrobble history via Last.fm API
-- `lastfm stats` - Basic listening statistics for the year
-- `lastfm overview [--html FILE]` - Comprehensive all-time listening overview (console or HTML export)
-- `lastfm review [--html FILE]` - Comprehensive year-in-review (console or HTML export)
-- `lastfm artist "Name"` - Deep dive on single artist across all years with critics' selections
+- `music-history fetch-api-key [--key KEY]` - Set up Last.fm API key for downloading scrobbles
+- `music-history fetch <username> [--output PATH] [--start-year YEAR]` - Download scrobble history via Last.fm API
+- `music-history stats` - Basic listening statistics for the year
+- `music-history overview [--html FILE]` - Comprehensive all-time listening overview (console or HTML export)
+- `music-history review [--html FILE]` - Comprehensive year-in-review (console or HTML export)
+- `music-history artist "Name"` - Deep dive on single artist across all years with critics' selections
 
-### Listen Group (`lastfm listen ...`)
+### Listen Group (`music-history listen ...`)
 Basic listening analysis commands:
 - `listen top [artists|albums|tracks] [-n NUM] [--unselected] [--new-album]` - Top plays with optional filters
 - `listen plays [--artist NAME] [--days N]` - List recent plays with filters
@@ -280,7 +280,7 @@ Basic listening analysis commands:
 - `listen abandoned` - Artists last played in the specified year (shows what you stopped listening to)
 - `listen first <artist>` - When you first played an artist
 
-### Critics Group (`lastfm critics ...`)
+### Critics Group (`music-history critics ...`)
 Cross-reference with music critics' year-end lists (defaults to all years 2011-2025 unless `--year` specified):
 - `critics fetch [--year Y]` - Scrape critics' lists from yearendlists.com for a year
 - `critics matched [-n NUM]` - Albums you've heard that critics loved (all years)
@@ -292,12 +292,12 @@ Cross-reference with music critics' year-end lists (defaults to all years 2011-2
 - `critics accuracy [--year Y]` - Did old recommendations become favorites?
 - `critics tracker [--ref-year Y] [--target-year Y]` - Follow aligned critics across years
 
-### History Group (`lastfm history ...`)
+### History Group (`music-history history ...`)
 Long-term listening pattern analysis:
 - `history loyalty [--min-years N]` - Longtime fans, abandoned artists, rediscoveries
 - `history evolution` - Detect musical eras and taste shifts with concentration analysis
 
-### Metadata Group (`lastfm metadata ...`)
+### Metadata Group (`music-history metadata ...`)
 MusicBrainz enrichment (requires `metadata download` first):
 - `metadata download [--force]` - Download full MusicBrainz DB (~3GB download)
 - `metadata enrich [--limit N]` - Populate release year cache from local DB
@@ -307,18 +307,18 @@ MusicBrainz enrichment (requires `metadata download` first):
 - `metadata countries [-n NUM]` - Release country breakdown
 - `metadata types` - Album vs EP vs single breakdown
 
-### Spotify Group (`lastfm spotify ...`)
+### Spotify Group (`music-history spotify ...`)
 Spotify integration and data import:
 - `spotify auth [--client-id X] [--client-secret Y]` - Set up Spotify API credentials
 - `spotify playlist [--type matched|missing|both]` - Create playlists from year-in-review data
 - `spotify convert <dir> [--output PATH] [--min-duration S] [--include-skipped]` - Convert Spotify Extended Streaming History to CSV
 
-### Visualize Group (`lastfm visualize ...`)
+### Visualize Group (`music-history visualize ...`)
 Visual representations of listening data:
 - `visualize calendar [--year Y]` - GitHub-style calendar heatmap of listening activity
 - `visualize genome [--year Y] [--min-plays N]` - 2D "musical genome" map using artist embeddings (UMAP projection)
 
-### Eval Group (`lastfm eval ...`)
+### Eval Group (`music-history eval ...`)
 Evaluate embedding and recommendation quality:
 - `eval holdout` - Test if embeddings predict future artist discoveries
 - `eval followthrough` - Test if critic recommendations became your favorites
@@ -428,7 +428,7 @@ vector = user_emb.get_embedding("Radiohead")
 
 ### Cache
 
-Embeddings are cached per-CSV in `~/.cache/lastfm-analysis/<csv_hash>/`:
+Embeddings are cached per-CSV in `~/.cache/music-history-analysis/<csv_hash>/`:
 - `artist_embeddings.pkl` - User embeddings
 - `critics_embeddings.pkl` - Critics space embeddings
 - `critic_vectors.pkl` - Per-critic taste vectors
@@ -545,26 +545,26 @@ The CLI provides two comprehensive report commands:
 
 ## Agent-Native CLI
 
-The analysis tools are available as top-level `lastfm` commands for LLM agents. Commands can run one-shot with `--csv` or dispatch to a long-lived named session.
+The analysis tools are available as top-level `music-history` commands for LLM agents. Commands can run one-shot with `--csv` or dispatch to a long-lived named session.
 
 ### Session Workflow
 
 ```bash
 # Start a long-lived session
-lastfm session-start --session-id music-2025 --csv /path/to/scrobbles.csv --json
+music-history session-start --session-id music-2025 --csv /path/to/scrobbles.csv --json
 
 # Check session health and metadata
-lastfm session-status --session music-2025 --json
+music-history session-status --session music-2025 --json
 
 # Run analysis commands against the session
-lastfm listening-stats --session music-2025 --json
-lastfm blind-spots --session music-2025 --year 2025 --limit 20 --json
+music-history listening-stats --session music-2025 --json
+music-history blind-spots --session music-2025 --year 2025 --limit 20 --json
 
 # Stop the session
-lastfm session-stop --session music-2025 --json
+music-history session-stop --session music-2025 --json
 ```
 
-Session metadata and sockets live under `~/.cache/lastfm-analysis/sessions/<session-id>/`.
+Session metadata and sockets live under `~/.cache/music-history-analysis/sessions/<session-id>/`.
 
 ### Available Agent Commands
 
@@ -589,66 +589,66 @@ Session metadata and sockets live under `~/.cache/lastfm-analysis/sessions/<sess
 
 ```bash
 # Download scrobbles from Last.fm API
-uv run lastfm fetch-api-key --key YOUR_API_KEY
-uv run lastfm fetch YOUR_USERNAME
+uv run music-history fetch-api-key --key YOUR_API_KEY
+uv run music-history fetch YOUR_USERNAME
 
 # Download only from 2024 onwards (faster for updates)
-uv run lastfm fetch YOUR_USERNAME --start-year 2024
+uv run music-history fetch YOUR_USERNAME --start-year 2024
 
 # All-time overview (console)
-uv run lastfm overview
+uv run music-history overview
 
 # All-time overview (HTML)
-uv run lastfm overview --html my-overview.html
+uv run music-history overview --html my-overview.html
 
 # Basic stats with global --year option
-uv run lastfm --year 2024 stats
+uv run music-history --year 2024 stats
 
 # Listen commands
-uv run lastfm --year 2024 listen top artists --limit 20
-uv run lastfm --year 2024 listen discovered
-uv run lastfm --year 2010 listen abandoned
-uv run lastfm listen first "Radiohead"
+uv run music-history --year 2024 listen top artists --limit 20
+uv run music-history --year 2024 listen discovered
+uv run music-history --year 2010 listen abandoned
+uv run music-history listen first "Radiohead"
 
 # Critics analysis (all years by default)
-uv run lastfm critics matched --limit 30
-uv run lastfm critics who-listed "Charli XCX"
-uv run lastfm critics unheard --weighted
+uv run music-history critics matched --limit 30
+uv run music-history critics who-listed "Charli XCX"
+uv run music-history critics unheard --weighted
 
 # Critics for specific year
-uv run lastfm --year 2024 critics matched
+uv run music-history --year 2024 critics matched
 
 # Full review (console)
-uv run lastfm --year 2024 review
+uv run music-history --year 2024 review
 
 # Full review (HTML)
-uv run lastfm --year 2024 review --html 2024-review.html
+uv run music-history --year 2024 review --html 2024-review.html
 
 # Metadata analysis (requires MusicBrainz DB)
-uv run lastfm metadata download
-uv run lastfm --year 2024 metadata genres
-uv run lastfm --year 2024 metadata catalog
+uv run music-history metadata download
+uv run music-history --year 2024 metadata genres
+uv run music-history --year 2024 metadata catalog
 
 # History commands
-uv run lastfm history loyalty --min-years 3
-uv run lastfm history evolution
+uv run music-history history loyalty --min-years 3
+uv run music-history history evolution
 
 # Spotify integration
-uv run lastfm spotify auth --client-id X --client-secret Y
-uv run lastfm --year 2024 spotify playlist --type both
+uv run music-history spotify auth --client-id X --client-secret Y
+uv run music-history --year 2024 spotify playlist --type both
 
 # Import Spotify data (alternative to Last.fm)
-uv run lastfm spotify convert path/to/spotify-data/ -o spotify-scrobbles.csv
-uv run lastfm --csv spotify-scrobbles.csv stats
+uv run music-history spotify convert path/to/spotify-data/ -o spotify-scrobbles.csv
+uv run music-history --csv spotify-scrobbles.csv stats
 
 # Visualizations
-uv run lastfm visualize calendar --year 2024
-uv run lastfm visualize genome --min-plays 10
+uv run music-history visualize calendar --year 2024
+uv run music-history visualize genome --min-plays 10
 
 # Evaluation (test embedding/recommendation quality)
-uv run lastfm eval holdout
-uv run lastfm eval followthrough
-uv run lastfm eval baseline
+uv run music-history eval holdout
+uv run music-history eval followthrough
+uv run music-history eval baseline
 ```
 
 ## Dependencies

@@ -65,7 +65,7 @@ def spotify_auth(
             console.print("1. Go to https://developer.spotify.com/dashboard")
             console.print("2. Create an app")
             console.print("3. Add [cyan]http://localhost:8888/callback[/cyan] to Redirect URIs")
-            console.print("4. Run: [cyan]lastfm spotify auth --client-id YOUR_ID --client-secret YOUR_SECRET[/cyan]")
+            console.print("4. Run: [cyan]music-history spotify auth --client-id YOUR_ID --client-secret YOUR_SECRET[/cyan]")
             return
 
     # Test authentication
@@ -108,7 +108,7 @@ def spotify_playlist(
     sp = spotify.get_spotify_client()
     if not sp:
         console.print("[red]Spotify not configured.[/red]")
-        console.print("Run [cyan]lastfm spotify auth[/cyan] first.")
+        console.print("Run [cyan]music-history spotify auth[/cyan] first.")
         raise typer.Exit(1)
 
     # Load data (same as review command)
@@ -117,7 +117,7 @@ def spotify_playlist(
 
     json_path = get_critics_path(year)
     if not json_path.exists():
-        console.print(f"[red]No critics data for {year}. Run 'lastfm critics fetch --year {year}' first.[/red]")
+        console.print(f"[red]No critics data for {year}. Run 'music-history critics fetch --year {year}' first.[/red]")
         raise typer.Exit(1)
 
     critics_data = crossref.load_critics_data(json_path)
@@ -229,7 +229,7 @@ def spotify_convert(
     Downloads your data from: https://www.spotify.com/account/privacy/
     Request "Extended streaming history" and extract the ZIP.
 
-    The output CSV is compatible with all lastfm commands and includes
+    The output CSV is compatible with all Music History commands and includes
     extended Spotify-specific columns (ms_played, shuffle, platform, etc.)
     for future analysis features.
     """

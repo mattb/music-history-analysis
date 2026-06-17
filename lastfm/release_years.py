@@ -12,10 +12,10 @@ from rich.progress import Progress, SpinnerColumn, TextColumn, BarColumn, TaskPr
 console = Console()
 
 # Set up MusicBrainz
-musicbrainzngs.set_useragent("lastfm-analysis", "1.0", "https://github.com/example/lastfm-analysis")
+musicbrainzngs.set_useragent("music-history-analysis", "1.0", "https://github.com/example/music-history-analysis")
 
 # Cache for release years
-CACHE_DIR = Path.home() / ".cache" / "lastfm-analysis"
+CACHE_DIR = Path.home() / ".cache" / "music-history-analysis"
 RELEASE_CACHE_FILE = CACHE_DIR / "release_years.json"
 
 

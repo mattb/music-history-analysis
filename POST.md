@@ -78,7 +78,7 @@ Default threshold is 0.4, which roughly corresponds to the old "5 tracks, 5 play
 All of this powers a recommendation command with three modes:
 
 ```bash
-lastfm surprise-me --mode bridge
+music-history surprise-me --mode bridge
 ```
 
 **Adventurous mode** weights toward artists I've never heard. It multiplies critic alignment by a novelty factor: 1.0 for unknown artists, 0.3 for artists I've played before. Pure discovery, still filtered through aligned critics.
@@ -156,23 +156,23 @@ The full CLI has quite a few commands. Some highlights:
 
 ```bash
 # Download your Last.fm history
-lastfm fetch-api-key --key YOUR_API_KEY
-lastfm fetch YOUR_USERNAME
+music-history fetch-api-key --key YOUR_API_KEY
+music-history fetch YOUR_USERNAME
 
 # Year-in-review as HTML
-lastfm review --html 2024-review.html
+music-history review --html 2024-review.html
 
 # Critics who listed an artist across all years
-lastfm critics who-listed "Radiohead"
+music-history critics who-listed "Radiohead"
 
 # Highly-acclaimed albums you've never heard
-lastfm critics blind-spots --min-critics 20
+music-history critics blind-spots --min-critics 20
 
 # Artists you abandoned (last played in a given year)
-lastfm listen abandoned --year 2018
+music-history listen abandoned --year 2018
 
 # Musical genome visualisation (2D UMAP projection)
-lastfm visualize genome --min-plays 10
+music-history visualize genome --min-plays 10
 ```
 
 The `listen abandoned` command is morbidly interesting. It shows artists you stopped listening to in a given year—the exits from your musical life. Combined with `listen discovered` (entry points), you can map the flow of artists through your listening history.
@@ -182,8 +182,8 @@ The `listen abandoned` command is morbidly interesting. It shows artists you sto
 Spotify users can request their Extended Streaming History (Settings → Privacy → Download your data), then convert it:
 
 ```bash
-lastfm spotify convert ~/Downloads/my_spotify_data -o my-history.csv
-lastfm --csv my-history.csv surprise-me
+music-history spotify convert ~/Downloads/my_spotify_data -o my-history.csv
+music-history --csv my-history.csv surprise-me
 ```
 
 The Spotify data lacks MusicBrainz IDs, so metadata lookups fall back to artist/album name matching. It works, but the first run is slower while it builds the name-based cache.

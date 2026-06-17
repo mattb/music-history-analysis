@@ -216,7 +216,7 @@ class LastFMAPI:
 
 def get_api_key() -> Optional[str]:
     """Get Last.fm API key from cache."""
-    cache_dir = Path.home() / ".cache" / "lastfm-analysis"
+    cache_dir = Path.home() / ".cache" / "music-history-analysis"
     cache_file = cache_dir / "lastfm_api_key.txt"
 
     if cache_file.exists():
@@ -226,7 +226,7 @@ def get_api_key() -> Optional[str]:
 
 def save_api_key(api_key: str) -> None:
     """Save Last.fm API key to cache."""
-    cache_dir = Path.home() / ".cache" / "lastfm-analysis"
+    cache_dir = Path.home() / ".cache" / "music-history-analysis"
     cache_dir.mkdir(parents=True, exist_ok=True)
     cache_file = cache_dir / "lastfm_api_key.txt"
     cache_file.write_text(api_key)

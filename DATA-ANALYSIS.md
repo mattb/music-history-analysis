@@ -1,6 +1,6 @@
 # Data Analysis Strategies
 
-This document describes the analytical approaches used throughout the Last.fm CLI tool. Each strategy addresses a different aspect of understanding musical taste and listening behavior.
+This document describes the analytical approaches used throughout the Music History CLI tool. Each strategy addresses a different aspect of understanding musical taste and listening behavior.
 
 ---
 
@@ -152,7 +152,7 @@ df["year"] = df["timestamp"].dt.year
 ```
 
 **Acquisition**:
-- `lastfm fetch <username>` downloads via API
+- `music-history fetch <username>` downloads via API
 - 200 tracks per page, rate-limited (0.2s delay)
 - Auto-retry on 500 errors (3 attempts, 10s backoff)
 - `--start-year` flag for incremental updates
@@ -202,7 +202,7 @@ df["year"] = df["timestamp"].dt.year
 | `albums[].album_url` | string | Optional link to album page |
 
 **Acquisition**:
-- `lastfm critics fetch --year YYYY` scrapes yearendlists.com
+- `music-history critics fetch --year YYYY` scrapes yearendlists.com
 - Two-phase crawl: discover list URLs → parse each list
 - Filters out non-music lists (films, TV, podcasts, books)
 - Rate-limited (0.5s default delay)
@@ -256,7 +256,7 @@ df["year"] = df["timestamp"].dt.year
 
 #### Local SQLite Database
 
-**Location**: `~/.cache/lastfm-analysis/musicbrainz_releases.db`
+**Location**: `~/.cache/music-history-analysis/musicbrainz_releases.db`
 
 **Size**: ~1-2GB
 
@@ -298,7 +298,7 @@ df["year"] = df["timestamp"].dt.year
 
 ### Cache Files
 
-**Location**: `~/.cache/lastfm-analysis/`
+**Location**: `~/.cache/music-history-analysis/`
 
 | File | Purpose |
 |------|---------|
@@ -413,7 +413,7 @@ Two complementary embedding spaces capture different notions of artist similarit
 
 **Interpretation**: Artists you listen to in the same periods are similar. Captures personal taste associations.
 
-**Cache**: `~/.cache/lastfm-analysis/{csv_hash}/artist_embeddings_cooccurrence_minplays5.pkl`
+**Cache**: `~/.cache/music-history-analysis/{csv_hash}/artist_embeddings_cooccurrence_minplays5.pkl`
 
 ### Critics Embeddings (Co-Listing Patterns)
 
@@ -428,7 +428,7 @@ Two complementary embedding spaces capture different notions of artist similarit
 
 **Interpretation**: Artists that critics group together represent "critical consensus" similarity.
 
-**Cache**: `~/.cache/lastfm-analysis/critics_embeddings/critics_embeddings_2011-2025_min2.pkl`
+**Cache**: `~/.cache/music-history-analysis/critics_embeddings/critics_embeddings_2011-2025_min2.pkl`
 
 ### Similarity Search
 
@@ -974,10 +974,10 @@ Embed each critic as a vector in the same space as artists for better taste matc
 
 **New CLI:**
 ```bash
-lastfm critics aligned              # Top critics by vector similarity
-lastfm critics aligned --drift      # Show alignment trends over time
-lastfm critics list -v              # Show + sort by vector similarity
-lastfm critics unheard -V           # Vector-weighted recommendations with score
+music-history critics aligned              # Top critics by vector similarity
+music-history critics aligned --drift      # Show alignment trends over time
+music-history critics list -v              # Show + sort by vector similarity
+music-history critics unheard -V           # Vector-weighted recommendations with score
 ```
 
 **Key insight**: Vector similarity captures taste *patterns*, not just album overlap. A critic can have high vector similarity even with few shared albums if they consistently pick similar artists.
@@ -1002,10 +1002,10 @@ Add lightweight validation to prove improvements before/after model changes.
 
 **New CLI:**
 ```bash
-lastfm eval holdout                 # Test discovery prediction
-lastfm eval followthrough           # Comprehensive ranking evaluation
-lastfm eval baseline --desc "..."   # Save full evaluation
-lastfm eval compare                 # Compare baselines
+music-history eval holdout                 # Test discovery prediction
+music-history eval followthrough           # Comprehensive ranking evaluation
+music-history eval baseline --desc "..."   # Save full evaluation
+music-history eval compare                 # Compare baselines
 ```
 
 **Evaluation Philosophy:**
@@ -1095,9 +1095,9 @@ Where:
 
 **New CLI:**
 ```bash
-lastfm critics matched --familiarity 0.5    # More albums count as "heard"
-lastfm critics unheard --familiarity 0.3    # Stricter "unheard" definition
-lastfm eval followthrough -f 0.6            # Evaluate with familiarity threshold
+music-history critics matched --familiarity 0.5    # More albums count as "heard"
+music-history critics unheard --familiarity 0.3    # Stricter "unheard" definition
+music-history eval followthrough -f 0.6            # Evaluate with familiarity threshold
 ```
 
 **Evaluation Results:**
@@ -1156,17 +1156,17 @@ Build a local knowledge graph for path explanations and multi-hop reasoning.
 │   Path strength = product of edge weights
 │
 ├── CLI commands
-│   lastfm graph build [--force]
-│   lastfm graph explain "Moor Mother"
-│   lastfm graph path "Radiohead" "Burial"
-│   lastfm graph neighborhood "Four Tet" [--hops 2]
+│   music-history graph build [--force]
+│   music-history graph explain "Moor Mother"
+│   music-history graph path "Radiohead" "Burial"
+│   music-history graph neighborhood "Four Tet" [--hops 2]
 │
-└── Cache graph to ~/.cache/lastfm-analysis/{csv_hash}/knowledge_graph.pkl
+└── Cache graph to ~/.cache/music-history-analysis/{csv_hash}/knowledge_graph.pkl
 ```
 
 **Sample output:**
 ```
-$ lastfm graph explain "Moor Mother"
+$ music-history graph explain "Moor Mother"
 
 ═══ Why Moor Mother? ═══
 

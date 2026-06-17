@@ -95,7 +95,7 @@ def listen_top(
                     if album['artist']:
                         critics_artists.add(crossref.normalize_for_matching(album['artist']))
         except FileNotFoundError:
-            console.print(f"[red]No critics data for {year}. Run 'lastfm critics fetch --year {year}' first.[/red]")
+            console.print(f"[red]No critics data for {year}. Run 'music-history critics fetch --year {year}' first.[/red]")
             raise typer.Exit(1)
 
     if what == "artists":
@@ -811,9 +811,9 @@ def listen_dimensions(
     what each dimension captures (e.g., genre, era, or listening context).
 
     Examples:
-        lastfm listen dimensions           # Top 10 dimensions by variance
-        lastfm listen dimensions --dim 3   # Analyze dimension 3 specifically
-        lastfm listen dimensions --critics # Analyze critics embedding dimensions
+        music-history listen dimensions           # Top 10 dimensions by variance
+        music-history listen dimensions --dim 3   # Analyze dimension 3 specifically
+        music-history listen dimensions --critics # Analyze critics embedding dimensions
     """
     from .. import embeddings
 
@@ -1050,7 +1050,7 @@ def listen_ep_artists(
     Shows artists who primarily release EPs and singles rather than
     traditional albums - typical for electronic producers and remixers.
 
-    Requires MusicBrainz database (run 'lastfm metadata download' first).
+    Requires MusicBrainz database (run 'music-history metadata download' first).
     """
     from .. import musicbrainz_db
 
@@ -1061,7 +1061,7 @@ def listen_ep_artists(
     # Check if MusicBrainz DB exists
     if not musicbrainz_db.database_exists():
         console.print("[red]MusicBrainz database not found.[/red]")
-        console.print("[yellow]Run 'lastfm metadata download' first to download release type data.[/yellow]")
+        console.print("[yellow]Run 'music-history metadata download' first to download release type data.[/yellow]")
         raise typer.Exit(1)
 
     df = data.load_scrobbles(get_csv_path(csv))

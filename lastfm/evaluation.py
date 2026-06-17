@@ -958,7 +958,7 @@ def save_baseline(
 ) -> Path:
     """Save evaluation baseline to cache."""
     if cache_dir is None:
-        cache_dir = Path.home() / ".cache" / "lastfm-analysis" / "evaluation"
+        cache_dir = Path.home() / ".cache" / "music-history-analysis" / "evaluation"
     cache_dir.mkdir(parents=True, exist_ok=True)
 
     # Create filename from timestamp
@@ -1021,7 +1021,7 @@ def save_baseline(
 def load_baselines(cache_dir: Optional[Path] = None) -> List[dict]:
     """Load all saved baselines."""
     if cache_dir is None:
-        cache_dir = Path.home() / ".cache" / "lastfm-analysis" / "evaluation"
+        cache_dir = Path.home() / ".cache" / "music-history-analysis" / "evaluation"
 
     if not cache_dir.exists():
         return []

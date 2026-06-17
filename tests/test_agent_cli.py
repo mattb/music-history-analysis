@@ -56,7 +56,7 @@ def test_session_status_reports_persisted_liveness_without_waking_session(
 ):
     import lastfm.session_client as session_client
 
-    monkeypatch.setenv("LASTFM_SESSION_ROOT", str(tmp_path))
+    monkeypatch.setenv("MUSIC_HISTORY_SESSION_ROOT", str(tmp_path))
     paths = session_client.session_paths("sleeping")
     paths.root.mkdir(parents=True)
     paths.metadata.write_text(json.dumps({"session_id": "sleeping", "pid": 123}))
@@ -83,7 +83,7 @@ def test_session_list_reports_true_and_false_liveness_without_waking_sessions(
 ):
     import lastfm.session_client as session_client
 
-    monkeypatch.setenv("LASTFM_SESSION_ROOT", str(tmp_path))
+    monkeypatch.setenv("MUSIC_HISTORY_SESSION_ROOT", str(tmp_path))
     for session_id in ("awake", "sleeping"):
         paths = session_client.session_paths(session_id)
         paths.root.mkdir(parents=True)
@@ -238,8 +238,8 @@ def test_life_event_window_real_session_socket_matches_one_shot(
     from lastfm.session_client import session_paths
     from lastfm.session_daemon import AgentRequestHandler, UnixAgentServer
 
-    session_root = tempfile.mkdtemp(prefix="lastfm-event-", dir="/tmp")
-    monkeypatch.setenv("LASTFM_SESSION_ROOT", session_root)
+    session_root = tempfile.mkdtemp(prefix="music-history-event-", dir="/tmp")
+    monkeypatch.setenv("MUSIC_HISTORY_SESSION_ROOT", session_root)
     paths = session_paths("event-parity")
     paths.root.mkdir(parents=True)
     state = AnalysisState()
@@ -404,8 +404,8 @@ def test_listening_change_points_real_one_shot_and_unix_socket_parity(
     from lastfm import data
 
     state.df = data.load_scrobbles(csv)
-    session_root = tempfile.mkdtemp(prefix="lastfm-change-", dir="/tmp")
-    monkeypatch.setenv("LASTFM_SESSION_ROOT", str(session_root))
+    session_root = tempfile.mkdtemp(prefix="music-history-change-", dir="/tmp")
+    monkeypatch.setenv("MUSIC_HISTORY_SESSION_ROOT", str(session_root))
     paths = lastfm.session_client.session_paths("change-parity")
     paths.root.mkdir(parents=True)
     server = UnixAgentServer(
@@ -453,8 +453,8 @@ def test_listening_change_points_socket_failure_matches_one_shot(tmp_path, monke
         "uts,utc_time,artist,artist_mbid,album,album_mbid,track,track_mbid\n"
         + "\n".join(rows)
     )
-    root = tempfile.mkdtemp(prefix="lastfm-change-error-", dir="/tmp")
-    monkeypatch.setenv("LASTFM_SESSION_ROOT", root)
+    root = tempfile.mkdtemp(prefix="music-history-change-error-", dir="/tmp")
+    monkeypatch.setenv("MUSIC_HISTORY_SESSION_ROOT", root)
     paths = lastfm.session_client.session_paths("change-error")
     paths.root.mkdir(parents=True)
     state = AnalysisState()
@@ -488,7 +488,7 @@ def test_session_start_help_documents_lifecycle():
 
 
 def test_session_start_invalid_csv_emits_only_structured_json(tmp_path, monkeypatch):
-    monkeypatch.setenv("LASTFM_SESSION_ROOT", str(tmp_path / "sessions"))
+    monkeypatch.setenv("MUSIC_HISTORY_SESSION_ROOT", str(tmp_path / "sessions"))
     invalid_csv = tmp_path / "invalid.csv"
     invalid_csv.write_text("")
 

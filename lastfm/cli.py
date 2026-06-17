@@ -14,10 +14,10 @@ app = typer.Typer(
     help=(
         "Analyze your Last.fm listening history.\n\n"
         "Agent workflow:\n"
-        "  lastfm session-start --session-id music-2025 --csv recenttracks.csv --json\n"
-        "  lastfm listening-stats --session music-2025 --json\n"
-        "  lastfm blind-spots --session music-2025 --year 2025 --limit 20 --json\n"
-        "  lastfm session-stop --session music-2025 --json\n"
+        "  music-history session-start --session-id music-2025 --csv recenttracks.csv --json\n"
+        "  music-history listening-stats --session music-2025 --json\n"
+        "  music-history blind-spots --session music-2025 --year 2025 --limit 20 --json\n"
+        "  music-history session-stop --session music-2025 --json\n"
         "\n"
         "Agent commands also support one-shot mode with --csv instead of --session.\n"
     ),
@@ -134,18 +134,18 @@ def fetch_api_key(
     if api_key:
         lastfm_api.save_api_key(api_key)
         console.print("[green]✓ API key saved successfully![/green]")
-        console.print(f"[dim]Stored in: {Path.home() / '.cache' / 'lastfm-analysis' / 'lastfm_api_key.txt'}[/dim]")
+        console.print(f"[dim]Stored in: {Path.home() / '.cache' / 'music-history-analysis' / 'lastfm_api_key.txt'}[/dim]")
     else:
         stored_key = lastfm_api.get_api_key()
         if stored_key:
             console.print(f"[green]API key found:[/green] {stored_key[:8]}...")
-            console.print(f"[dim]Stored in: {Path.home() / '.cache' / 'lastfm-analysis' / 'lastfm_api_key.txt'}[/dim]")
+            console.print(f"[dim]Stored in: {Path.home() / '.cache' / 'music-history-analysis' / 'lastfm_api_key.txt'}[/dim]")
         else:
             console.print("[yellow]No API key found.[/yellow]")
             console.print("\nTo get an API key:")
             console.print("1. Go to [cyan]https://www.last.fm/api/account/create[/cyan]")
             console.print("2. Fill out the form (app name can be anything)")
-            console.print("3. Run: [cyan]lastfm fetch-api-key --key YOUR_API_KEY[/cyan]")
+            console.print("3. Run: [cyan]music-history fetch-api-key --key YOUR_API_KEY[/cyan]")
 
 
 @app.command(name="fetch")
@@ -169,7 +169,7 @@ def fetch_scrobbles(
 
     if not api_key:
         console.print("[red]No API key found![/red]")
-        console.print("Run [cyan]lastfm fetch-api-key --help[/cyan] to set one up.")
+        console.print("Run [cyan]music-history fetch-api-key --help[/cyan] to set one up.")
         raise typer.Exit(1)
 
     # Determine output path
@@ -183,11 +183,11 @@ def fetch_scrobbles(
         count = api.fetch_all_scrobbles(username, output, max_pages=max_pages, start_year=start_year)
         if count > 0:
             console.print(f"\n[green]✓ Success![/green] Ready to analyze:")
-            console.print(f"  [cyan]lastfm --csv {output.name} stats[/cyan]")
+            console.print(f"  [cyan]music-history --csv {output.name} stats[/cyan]")
     except httpx.HTTPStatusError as e:
         if e.response.status_code == 403:
             console.print("[red]Invalid API key![/red]")
-            console.print("Run [cyan]lastfm fetch-api-key --help[/cyan] to update it.")
+            console.print("Run [cyan]music-history fetch-api-key --help[/cyan] to update it.")
         elif e.response.status_code == 404:
             console.print(f"[red]User not found:[/red] {username}")
         elif e.response.status_code == 500:
@@ -230,10 +230,10 @@ def doctor(
             checks["csv_data"] = {"status": "ok", "details": f"{csv_path.name} ({len(df)} plays)"}
         except Exception as e:
             checks["csv_data"] = {"status": "missing", "details": f"{csv_path.name} (error: {e})",
-                                  "fix": "lastfm fetch YOUR_USERNAME"}
+                                  "fix": "music-history fetch YOUR_USERNAME"}
     else:
         checks["csv_data"] = {"status": "missing", "details": "Not found",
-                              "fix": "lastfm fetch YOUR_USERNAME"}
+                              "fix": "music-history fetch YOUR_USERNAME"}
 
     # 2. Check Last.fm API key
     api_key = lastfm_api.get_api_key()
@@ -241,7 +241,7 @@ def doctor(
         checks["lastfm_api_key"] = {"status": "ok", "details": f"Configured ({api_key[:8]}...)"}
     else:
         checks["lastfm_api_key"] = {"status": "optional", "details": "Not configured",
-                                    "fix": "lastfm fetch-api-key --key YOUR_KEY"}
+                                    "fix": "music-history fetch-api-key --key YOUR_KEY"}
 
     # 3. Check MusicBrainz database
     if musicbrainz_db.database_exists():
@@ -252,7 +252,7 @@ def doctor(
             checks["musicbrainz_db"] = {"status": "ok", "details": "Present"}
     else:
         checks["musicbrainz_db"] = {"status": "missing", "details": "Not found",
-                                    "fix": "lastfm metadata download"}
+                                    "fix": "music-history metadata download"}
 
     # 4. Check Critics data
     available_years = []
@@ -265,7 +265,7 @@ def doctor(
                                   "years": available_years}
     else:
         checks["critics_data"] = {"status": "missing", "details": "No years found",
-                                  "fix": "lastfm critics fetch --year 2024"}
+                                  "fix": "music-history critics fetch --year 2024"}
 
     # 5. Check Spotify credentials
     spotify_creds = spotify_mod.get_credentials()
@@ -273,12 +273,12 @@ def doctor(
         checks["spotify_credentials"] = {"status": "ok", "details": "Configured"}
     else:
         checks["spotify_credentials"] = {"status": "optional", "details": "Not configured",
-                                         "fix": "lastfm spotify auth --client-id X --client-secret Y"}
+                                         "fix": "music-history spotify auth --client-id X --client-secret Y"}
 
     # 6. Check embeddings cache (if CSV exists)
     if csvs:
         from . import embeddings
-        cache_base = Path.home() / ".cache" / "lastfm-analysis"
+        cache_base = Path.home() / ".cache" / "music-history-analysis"
         csv_cache_id = embeddings.get_csv_cache_id(sorted(csvs)[-1])
         user_emb_path = cache_base / csv_cache_id / "artist_embeddings_cooccurrence_W_minplays5.pkl"
         critics_emb_path = cache_base / "critics_embeddings"
@@ -364,7 +364,7 @@ def surprise_me(
         df = data.load_scrobbles(csv_path)
     except typer.Exit:
         if not json_output:
-            console.print("[red]No listening data found. Run 'lastfm doctor' to check setup.[/red]")
+            console.print("[red]No listening data found. Run 'music-history doctor' to check setup.[/red]")
         raise
 
     if not json_output:
@@ -489,7 +489,7 @@ def surprise_me(
 
     if not years_to_search:
         if not json_output:
-            console.print("[red]No critics data found. Run 'lastfm critics fetch --year 2024' first.[/red]")
+            console.print("[red]No critics data found. Run 'music-history critics fetch --year 2024' first.[/red]")
         raise typer.Exit(1)
 
     # === Aggregate candidates with multi-signal scoring ===
@@ -576,7 +576,7 @@ def surprise_me(
     if not candidates:
         if not json_output:
             console.print("[yellow]No unheard albums found![/yellow]")
-            console.print("Try running 'lastfm critics unheard' to see all recommendations.")
+            console.print("Try running 'music-history critics unheard' to see all recommendations.")
         raise typer.Exit(0)
 
     # === Weighted random selection ===

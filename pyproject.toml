@@ -1,5 +1,5 @@
 [project]
-name = "lastfm-analysis"
+name = "music-history-analysis"
 version = "0.1.0"
 description = "CLI for analyzing Last.fm listening history"
 requires-python = ">=3.10"
@@ -30,7 +30,7 @@ dev = [
 ]
 
 [project.scripts]
-lastfm = "lastfm.cli:app"
+music-history = "lastfm.cli:app"
 
 [build-system]
 requires = ["hatchling"]

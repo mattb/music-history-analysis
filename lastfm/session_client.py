@@ -52,8 +52,8 @@ class SessionStartupError(RuntimeError):
 def session_root() -> Path:
     return Path(
         os.environ.get(
-            "LASTFM_SESSION_ROOT",
-            Path.home() / ".cache" / "lastfm-analysis" / "sessions",
+            "MUSIC_HISTORY_SESSION_ROOT",
+            Path.home() / ".cache" / "music-history-analysis" / "sessions",
         )
     )
 
@@ -63,7 +63,7 @@ def session_paths(session_id: str) -> SessionPaths:
     root = sessions_root / session_id
     return SessionPaths(
         root=root,
-        socket=root / "lastfm.sock",
+        socket=root / "music-history.sock",
         pid=root / "pid",
         metadata=root / "metadata.json",
         restart_lock=sessions_root / ".locks" / f"{session_id}.lock",

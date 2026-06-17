@@ -777,7 +777,7 @@ def critics_review(
 
     json_path = get_critics_path(year)
     if not json_path.exists():
-        console.print(f"[red]No critics data for {year}. Run 'lastfm critics fetch --year {year}' first.[/red]")
+        console.print(f"[red]No critics data for {year}. Run 'music-history critics fetch --year {year}' first.[/red]")
         raise typer.Exit(1)
 
     with open(json_path) as f:
@@ -1358,7 +1358,7 @@ def critics_accuracy(
 
     json_path = get_critics_path(year)
     if not json_path.exists():
-        console.print(f"[red]No critics data for {year}. Run 'lastfm critics fetch --year {year}' first.[/red]")
+        console.print(f"[red]No critics data for {year}. Run 'music-history critics fetch --year {year}' first.[/red]")
         raise typer.Exit(1)
 
     with open(json_path) as f:
@@ -1480,10 +1480,10 @@ def critics_tracker(
     target_path = get_critics_path(target_year)
 
     if not ref_path.exists():
-        console.print(f"[red]No critics data for {reference_year}. Run 'lastfm critics fetch --year {reference_year}' first.[/red]")
+        console.print(f"[red]No critics data for {reference_year}. Run 'music-history critics fetch --year {reference_year}' first.[/red]")
         raise typer.Exit(1)
     if not target_path.exists():
-        console.print(f"[red]No critics data for {target_year}. Run 'lastfm critics fetch --year {target_year}' first.[/red]")
+        console.print(f"[red]No critics data for {target_year}. Run 'music-history critics fetch --year {target_year}' first.[/red]")
         raise typer.Exit(1)
 
     with open(ref_path) as f:

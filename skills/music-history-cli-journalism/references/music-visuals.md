@@ -28,7 +28,7 @@ Use for prompts such as "make Elle's Music Graph," "draw Chance's music graph," 
 
 Evidence flow:
 
-1. Run `lastfm listening-graph --session <id> --json`.
+1. Run `music-history listening-graph --session <id> --json`.
 2. Start with `--min-artist-plays 10 --min-shared-sessions 2`.
 3. If the dataset is small or sparse, lower to `--min-artist-plays 5 --min-shared-sessions 2`.
 4. Extract:
@@ -74,7 +74,7 @@ Use for prompts such as "make the Matt/Bill intersection Venn diagram" or "make 
 
 Evidence flow:
 
-1. Get all artist counts from both session CSVs, or use `lastfm top-artists --session <id> --limit <n> --json` when CSV access is not practical.
+1. Get all artist counts from both session CSVs, or use `music-history top-artists --session <id> --limit <n> --json` when CSV access is not practical.
 2. Normalize artist names case-insensitively for overlap, but render the best display casing.
 3. Rank shared artists by a balanced score such as `min(count_a, count_b)` and then total count.
 4. Use 8-12 shared artists in the center. Prefer artists with real weight for both people; avoid filling the center with one-play coincidences unless the overlap is very small.

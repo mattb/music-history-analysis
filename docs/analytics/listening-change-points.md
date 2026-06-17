@@ -1,6 +1,6 @@
 # Listening change points
 
-`lastfm listening-change-points` finds candidate boundaries where the measured composition or volume of listening changes. It does not name eras or infer places, moods, events, or causes.
+`music-history listening-change-points` finds candidate boundaries where the measured composition or volume of listening changes. It does not name eras or infer places, moods, events, or causes.
 
 ## Bins and vocabulary
 

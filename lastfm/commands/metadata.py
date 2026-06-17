@@ -41,7 +41,7 @@ def metadata_download(
     The dump file is cached locally, so re-running only re-processes (no re-download).
     Use --force to bypass the cache and re-download.
 
-    The database is stored at ~/.cache/lastfm-analysis/musicbrainz_releases.db
+    The database is stored at ~/.cache/music-history-analysis/musicbrainz_releases.db
     """
     from .. import musicbrainz_db
 
@@ -209,7 +209,7 @@ def metadata_catalog(
 
     if not cache:
         console.print("[yellow]No release year data found.[/yellow]")
-        console.print("Run [cyan]lastfm metadata enrich[/cyan] first to fetch release years.")
+        console.print("Run [cyan]music-history metadata enrich[/cyan] first to fetch release years.")
         raise typer.Exit(1)
 
     # Match scrobbles with release years
@@ -382,7 +382,7 @@ def metadata_genres(
     db_stats = musicbrainz_db.get_database_stats()
     if not db_stats:
         console.print("[yellow]No MusicBrainz database found.[/yellow]")
-        console.print("Run [cyan]lastfm metadata download[/cyan] first.")
+        console.print("Run [cyan]music-history metadata download[/cyan] first.")
         raise typer.Exit(1)
 
     df = data.load_scrobbles(get_csv_path(csv))
@@ -503,7 +503,7 @@ def metadata_labels(
     db_stats = musicbrainz_db.get_database_stats()
     if not db_stats:
         console.print("[yellow]No MusicBrainz database found.[/yellow]")
-        console.print("Run [cyan]lastfm metadata download[/cyan] first.")
+        console.print("Run [cyan]music-history metadata download[/cyan] first.")
         raise typer.Exit(1)
 
     df = data.load_scrobbles(get_csv_path(csv))
@@ -611,7 +611,7 @@ def metadata_countries(
     db_stats = musicbrainz_db.get_database_stats()
     if not db_stats:
         console.print("[yellow]No MusicBrainz database found.[/yellow]")
-        console.print("Run [cyan]lastfm metadata download[/cyan] first.")
+        console.print("Run [cyan]music-history metadata download[/cyan] first.")
         raise typer.Exit(1)
 
     df = data.load_scrobbles(get_csv_path(csv))
@@ -693,7 +693,7 @@ def metadata_types(
     db_stats = musicbrainz_db.get_database_stats()
     if not db_stats:
         console.print("[yellow]No MusicBrainz database found.[/yellow]")
-        console.print("Run [cyan]lastfm metadata download[/cyan] first.")
+        console.print("Run [cyan]music-history metadata download[/cyan] first.")
         raise typer.Exit(1)
 
     df = data.load_scrobbles(get_csv_path(csv))

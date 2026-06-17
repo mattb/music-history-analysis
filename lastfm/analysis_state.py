@@ -33,7 +33,7 @@ def to_serializable(obj: Any) -> Any:
 
 def find_csv(cwd: Path | None = None) -> Path | None:
     """Find CSV file from environment or glob."""
-    env_path = os.environ.get("LASTFM_CSV")
+    env_path = os.environ.get("MUSIC_HISTORY_CSV")
     if env_path:
         path = Path(env_path)
         if path.exists():
@@ -73,7 +73,7 @@ class AnalysisState:
 
         if csv_path is None:
             raise ValueError(
-                "No CSV found. Set LASTFM_CSV environment variable or "
+                "No CSV found. Set MUSIC_HISTORY_CSV environment variable or "
                 "place recenttracks-*.csv in the working directory."
             )
 

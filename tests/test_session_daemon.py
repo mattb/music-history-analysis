@@ -251,7 +251,7 @@ def test_idle_watchdog_shuts_down_server_and_exits(socket_path):
 def test_remove_owned_runtime_files_removes_socket_and_owned_pid(tmp_path):
     paths = SessionPaths(
         root=tmp_path,
-        socket=tmp_path / "lastfm.sock",
+        socket=tmp_path / "music-history.sock",
         pid=tmp_path / "pid",
         metadata=tmp_path / "metadata.json",
         restart_lock=tmp_path.parent / ".locks" / "test-session.lock",
@@ -270,7 +270,7 @@ def test_remove_owned_runtime_files_removes_socket_and_owned_pid(tmp_path):
 def test_remove_owned_runtime_files_preserves_different_pid(tmp_path):
     paths = SessionPaths(
         root=tmp_path,
-        socket=tmp_path / "lastfm.sock",
+        socket=tmp_path / "music-history.sock",
         pid=tmp_path / "pid",
         metadata=tmp_path / "metadata.json",
         restart_lock=tmp_path.parent / ".locks" / "test-session.lock",
@@ -292,7 +292,7 @@ def test_remove_owned_runtime_files_preserves_socket_without_owned_pid(
 ):
     paths = SessionPaths(
         root=tmp_path,
-        socket=tmp_path / "lastfm.sock",
+        socket=tmp_path / "music-history.sock",
         pid=tmp_path / "pid",
         metadata=tmp_path / "metadata.json",
         restart_lock=tmp_path.parent / ".locks" / "test-session.lock",
@@ -311,7 +311,7 @@ def test_remove_owned_runtime_files_preserves_socket_without_owned_pid(
 def test_main_removes_runtime_paths_before_closing_server(tmp_path, monkeypatch):
     paths = SessionPaths(
         root=tmp_path,
-        socket=tmp_path / "lastfm.sock",
+        socket=tmp_path / "music-history.sock",
         pid=tmp_path / "pid",
         metadata=tmp_path / "metadata.json",
         restart_lock=tmp_path.parent / ".locks" / "test-session.lock",
@@ -366,7 +366,7 @@ def test_main_emits_structured_server_start_failure_and_cleans_pid(
 ):
     paths = SessionPaths(
         root=tmp_path,
-        socket=tmp_path / "lastfm.sock",
+        socket=tmp_path / "music-history.sock",
         pid=tmp_path / "pid",
         metadata=tmp_path / "metadata.json",
         restart_lock=tmp_path.parent / ".locks" / "test-session.lock",
@@ -416,7 +416,7 @@ def test_main_emits_structured_server_start_failure_and_cleans_pid(
 def test_cleanup_waits_for_restart_and_preserves_successor_runtime(
     tmp_path, monkeypatch
 ):
-    monkeypatch.setenv("LASTFM_SESSION_ROOT", str(tmp_path))
+    monkeypatch.setenv("MUSIC_HISTORY_SESSION_ROOT", str(tmp_path))
     paths = session_daemon.session_paths("race")
     paths.root.mkdir(parents=True)
     paths.pid.write_text("111")
@@ -450,7 +450,7 @@ def test_cleanup_locks_supplied_session_paths_without_recomputing_root(
 ):
     paths = SessionPaths(
         root=tmp_path / "session",
-        socket=tmp_path / "session" / "lastfm.sock",
+        socket=tmp_path / "session" / "music-history.sock",
         pid=tmp_path / "session" / "pid",
         metadata=tmp_path / "session" / "metadata.json",
         restart_lock=tmp_path / "isolated-locks" / "session.lock",
@@ -472,7 +472,7 @@ def test_cleanup_locks_supplied_session_paths_without_recomputing_root(
 
 
 def test_restart_waits_for_cleanup_then_writes_successor_runtime(tmp_path, monkeypatch):
-    monkeypatch.setenv("LASTFM_SESSION_ROOT", str(tmp_path))
+    monkeypatch.setenv("MUSIC_HISTORY_SESSION_ROOT", str(tmp_path))
     paths = session_daemon.session_paths("race")
     paths.root.mkdir(parents=True)
     paths.pid.write_text("111")

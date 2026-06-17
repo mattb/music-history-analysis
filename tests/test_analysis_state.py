@@ -6,12 +6,12 @@ from lastfm.analysis_state import AnalysisState, find_csv
 
 
 def test_find_csv_prefers_explicit_env(monkeypatch, sample_csv):
-    monkeypatch.setenv("LASTFM_CSV", str(sample_csv))
+    monkeypatch.setenv("MUSIC_HISTORY_CSV", str(sample_csv))
     assert find_csv(Path.cwd()) == sample_csv
 
 
 def test_find_csv_uses_newest_recenttracks(monkeypatch, tmp_path):
-    monkeypatch.delenv("LASTFM_CSV", raising=False)
+    monkeypatch.delenv("MUSIC_HISTORY_CSV", raising=False)
     older = tmp_path / "recenttracks-user-1.csv"
     newer = tmp_path / "recenttracks-user-2.csv"
     older.write_text("x\n")

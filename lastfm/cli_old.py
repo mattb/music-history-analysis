@@ -107,7 +107,7 @@ def top(
                     if album['artist']:
                         critics_artists.add(crossref.normalize_for_matching(album['artist']))
         except FileNotFoundError:
-            console.print(f"[red]No critics data for {year}. Run 'lastfm crawl --year {year}' first.[/red]")
+            console.print(f"[red]No critics data for {year}. Run 'music-history crawl --year {year}' first.[/red]")
             raise typer.Exit(1)
 
     if what == "artists":
@@ -2212,7 +2212,7 @@ def spotify_auth(
             console.print("1. Go to https://developer.spotify.com/dashboard")
             console.print("2. Create an app")
             console.print("3. Add [cyan]http://localhost:8888/callback[/cyan] to Redirect URIs")
-            console.print("4. Run: [cyan]lastfm spotify-auth --client-id YOUR_ID --client-secret YOUR_SECRET[/cyan]")
+            console.print("4. Run: [cyan]music-history spotify-auth --client-id YOUR_ID --client-secret YOUR_SECRET[/cyan]")
             return
 
     # Test authentication
@@ -2253,7 +2253,7 @@ def spotify_playlist(
     sp = spotify.get_spotify_client()
     if not sp:
         console.print("[red]Spotify not configured.[/red]")
-        console.print("Run [cyan]lastfm spotify-auth[/cyan] first.")
+        console.print("Run [cyan]music-history spotify-auth[/cyan] first.")
         raise typer.Exit(1)
 
     # Load data (same as review command)
@@ -2262,7 +2262,7 @@ def spotify_playlist(
 
     json_path = critics_json or get_critics_path(year)
     if not json_path.exists():
-        console.print(f"[red]No critics data for {year}. Run 'lastfm crawl --year {year}' first.[/red]")
+        console.print(f"[red]No critics data for {year}. Run 'music-history crawl --year {year}' first.[/red]")
         raise typer.Exit(1)
 
     critics_data = crossref.load_critics_data(json_path)
@@ -2793,7 +2793,7 @@ def critic_accuracy(
 
     json_path = get_critics_path(year)
     if not json_path.exists():
-        console.print(f"[red]No critics data for {year}. Run 'lastfm crawl --year {year}' first.[/red]")
+        console.print(f"[red]No critics data for {year}. Run 'music-history crawl --year {year}' first.[/red]")
         raise typer.Exit(1)
 
     with open(json_path) as f:
@@ -2914,10 +2914,10 @@ def critic_tracker(
     target_path = get_critics_path(target_year)
 
     if not ref_path.exists():
-        console.print(f"[red]No critics data for {reference_year}. Run 'lastfm crawl --year {reference_year}' first.[/red]")
+        console.print(f"[red]No critics data for {reference_year}. Run 'music-history crawl --year {reference_year}' first.[/red]")
         raise typer.Exit(1)
     if not target_path.exists():
-        console.print(f"[red]No critics data for {target_year}. Run 'lastfm crawl --year {target_year}' first.[/red]")
+        console.print(f"[red]No critics data for {target_year}. Run 'music-history crawl --year {target_year}' first.[/red]")
         raise typer.Exit(1)
 
     with open(ref_path) as f:
@@ -3052,7 +3052,7 @@ def download_musicbrainz(
     The dump file is cached locally, so re-running only re-processes (no re-download).
     Use --force to bypass the cache and re-download.
 
-    The database is stored at ~/.cache/lastfm-analysis/musicbrainz_releases.db
+    The database is stored at ~/.cache/music-history-analysis/musicbrainz_releases.db
     """
     from . import musicbrainz_db
 
@@ -3217,7 +3217,7 @@ def catalog(
 
     if not cache:
         console.print("[yellow]No release year data found.[/yellow]")
-        console.print("Run [cyan]lastfm enrich-releases[/cyan] first to fetch release years.")
+        console.print("Run [cyan]music-history enrich-releases[/cyan] first to fetch release years.")
         raise typer.Exit(1)
 
     # Match scrobbles with release years
@@ -3385,7 +3385,7 @@ def genres(
     db_stats = musicbrainz_db.get_database_stats()
     if not db_stats:
         console.print("[yellow]No MusicBrainz database found.[/yellow]")
-        console.print("Run [cyan]lastfm download-musicbrainz[/cyan] first.")
+        console.print("Run [cyan]music-history download-musicbrainz[/cyan] first.")
         raise typer.Exit(1)
 
     df = data.load_scrobbles(get_csv_path(csv))
@@ -3505,7 +3505,7 @@ def labels(
     db_stats = musicbrainz_db.get_database_stats()
     if not db_stats:
         console.print("[yellow]No MusicBrainz database found.[/yellow]")
-        console.print("Run [cyan]lastfm download-musicbrainz[/cyan] first.")
+        console.print("Run [cyan]music-history download-musicbrainz[/cyan] first.")
         raise typer.Exit(1)
 
     df = data.load_scrobbles(get_csv_path(csv))
@@ -3612,7 +3612,7 @@ def countries(
     db_stats = musicbrainz_db.get_database_stats()
     if not db_stats:
         console.print("[yellow]No MusicBrainz database found.[/yellow]")
-        console.print("Run [cyan]lastfm download-musicbrainz[/cyan] first.")
+        console.print("Run [cyan]music-history download-musicbrainz[/cyan] first.")
         raise typer.Exit(1)
 
     df = data.load_scrobbles(get_csv_path(csv))
@@ -3693,7 +3693,7 @@ def release_types(
     db_stats = musicbrainz_db.get_database_stats()
     if not db_stats:
         console.print("[yellow]No MusicBrainz database found.[/yellow]")
-        console.print("Run [cyan]lastfm download-musicbrainz[/cyan] first.")
+        console.print("Run [cyan]music-history download-musicbrainz[/cyan] first.")
         raise typer.Exit(1)
 
     df = data.load_scrobbles(get_csv_path(csv))

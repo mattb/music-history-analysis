@@ -39,10 +39,10 @@ class ArtistEmbeddings:
 
         Args:
             csv_path: Path to CSV file (used to create CSV-specific cache subfolder)
-            cache_dir: Base cache directory (default: ~/.cache/lastfm-analysis)
+            cache_dir: Base cache directory (default: ~/.cache/music-history-analysis)
         """
         if cache_dir is None:
-            cache_dir = Path.home() / ".cache" / "lastfm-analysis"
+            cache_dir = Path.home() / ".cache" / "music-history-analysis"
 
         # Create CSV-specific subfolder if csv_path provided
         if csv_path is not None:
@@ -407,10 +407,10 @@ class CriticsEmbeddings:
         """Initialize critics embeddings manager.
 
         Args:
-            cache_dir: Base cache directory (default: ~/.cache/lastfm-analysis)
+            cache_dir: Base cache directory (default: ~/.cache/music-history-analysis)
         """
         if cache_dir is None:
-            cache_dir = Path.home() / ".cache" / "lastfm-analysis"
+            cache_dir = Path.home() / ".cache" / "music-history-analysis"
 
         self.cache_dir = cache_dir / "critics_embeddings"
         self.cache_dir.mkdir(parents=True, exist_ok=True)

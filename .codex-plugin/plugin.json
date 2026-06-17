@@ -1,0 +1,31 @@
+{
+  "name": "music-history",
+  "version": "0.1.0",
+  "description": "Codex plugin and CLI for analyzing listening history.",
+  "author": {
+    "name": "Matt Biddulph"
+  },
+  "keywords": [
+    "music",
+    "listening-history",
+    "lastfm",
+    "spotify"
+  ],
+  "skills": "./skills/",
+  "interface": {
+    "displayName": "Music History",
+    "shortDescription": "Analyze listening history with a local CLI.",
+    "longDescription": "Use a local music-history CLI and Codex skill to analyze Last.fm scrobbles, Spotify exports, critics lists, MusicBrainz metadata, and narrative music-data questions.",
+    "developerName": "Matt Biddulph",
+    "category": "Productivity",
+    "capabilities": [
+      "Interactive",
+      "Write"
+    ],
+    "defaultPrompt": [
+      "Analyze my listening history.",
+      "Find critic-list blind spots.",
+      "Write a music taste narrative."
+    ]
+  }
+}

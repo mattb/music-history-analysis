@@ -35,10 +35,10 @@ def fake_startup_lines(stream, _timeout_seconds):
 
 
 def test_session_paths_are_isolated_by_id(tmp_path, monkeypatch):
-    monkeypatch.setenv("LASTFM_SESSION_ROOT", str(tmp_path))
+    monkeypatch.setenv("MUSIC_HISTORY_SESSION_ROOT", str(tmp_path))
     paths = session_paths("music-2025")
     assert paths.root == tmp_path / "music-2025"
-    assert paths.socket == tmp_path / "music-2025" / "lastfm.sock"
+    assert paths.socket == tmp_path / "music-2025" / "music-history.sock"
     assert paths.pid == tmp_path / "music-2025" / "pid"
     assert paths.metadata == tmp_path / "music-2025" / "metadata.json"
     assert paths.restart_lock == tmp_path / ".locks" / "music-2025.lock"
@@ -53,7 +53,7 @@ def write_session_metadata(tmp_path: Path, session_id: str, csv_path: object) ->
 def test_dispatch_restarts_missing_socket_from_metadata_once(
     tmp_path, monkeypatch, capsys
 ):
-    monkeypatch.setenv("LASTFM_SESSION_ROOT", str(tmp_path))
+    monkeypatch.setenv("MUSIC_HISTORY_SESSION_ROOT", str(tmp_path))
     csv_path = tmp_path / "recenttracks-test.csv"
     csv_path.write_text("uts,artist\n")
     write_session_metadata(tmp_path, "music-2025", str(csv_path))
@@ -139,7 +139,7 @@ def test_dispatch_restarts_only_once_on_repeated_transport_failure(monkeypatch):
 def test_restart_rejects_invalid_metadata_without_spawning(
     tmp_path, monkeypatch, metadata, error_type, message
 ):
-    monkeypatch.setenv("LASTFM_SESSION_ROOT", str(tmp_path))
+    monkeypatch.setenv("MUSIC_HISTORY_SESSION_ROOT", str(tmp_path))
     paths = session_paths("music-2025")
     if metadata is not None:
         paths.root.mkdir(parents=True)
@@ -211,7 +211,7 @@ def test_dispatch_does_not_recover_nontransport_os_errors(monkeypatch, first_err
 def assert_response_transport_recovery(
     tmp_path, monkeypatch, first_response: bytes
 ) -> None:
-    monkeypatch.setenv("LASTFM_SESSION_ROOT", str(tmp_path))
+    monkeypatch.setenv("MUSIC_HISTORY_SESSION_ROOT", str(tmp_path))
     paths = session_paths("music-2025")
     paths.root.mkdir(parents=True)
     paths.socket.touch()
@@ -255,7 +255,7 @@ def test_dispatch_recovers_from_truncated_empty_response(tmp_path, monkeypatch):
 
 
 def test_concurrent_restarts_spawn_one_daemon(tmp_path, monkeypatch):
-    monkeypatch.setenv("LASTFM_SESSION_ROOT", str(tmp_path))
+    monkeypatch.setenv("MUSIC_HISTORY_SESSION_ROOT", str(tmp_path))
     csv_path = tmp_path / "recenttracks-test.csv"
     csv_path.write_text("uts,artist\n")
     write_session_metadata(tmp_path, "music-2025", str(csv_path))
@@ -304,7 +304,7 @@ def test_relative_csv_is_persisted_absolute_and_stopped_session_restarts(
     source_dir.mkdir()
     csv_path = source_dir / "history.csv"
     csv_path.write_text("uts,artist\n")
-    monkeypatch.setenv("LASTFM_SESSION_ROOT", str(session_root))
+    monkeypatch.setenv("MUSIC_HISTORY_SESSION_ROOT", str(session_root))
     monkeypatch.chdir(source_dir)
     loaded_paths = []
 
@@ -375,7 +375,7 @@ def test_relative_csv_is_persisted_absolute_and_stopped_session_restarts(
 def test_start_session_json_forwards_startup_events_until_ready(
     tmp_path, monkeypatch, capsys
 ):
-    monkeypatch.setenv("LASTFM_SESSION_ROOT", str(tmp_path))
+    monkeypatch.setenv("MUSIC_HISTORY_SESSION_ROOT", str(tmp_path))
     popen_kwargs = {}
 
     class FakeStdout:
@@ -433,7 +433,7 @@ def test_start_session_json_forwards_startup_events_until_ready(
 def test_start_session_non_json_returns_detached_process_immediately(
     tmp_path, monkeypatch
 ):
-    monkeypatch.setenv("LASTFM_SESSION_ROOT", str(tmp_path))
+    monkeypatch.setenv("MUSIC_HISTORY_SESSION_ROOT", str(tmp_path))
     popen_calls = []
     fake_process = object()
 
@@ -797,7 +797,7 @@ def test_start_session_until_ready_reaps_process_on_malformed_output(
 
 
 def test_real_daemon_csv_load_failure_is_structured_and_reaped(tmp_path, monkeypatch):
-    monkeypatch.setenv("LASTFM_SESSION_ROOT", str(tmp_path / "sessions"))
+    monkeypatch.setenv("MUSIC_HISTORY_SESSION_ROOT", str(tmp_path / "sessions"))
     invalid_csv = tmp_path / "invalid.csv"
     invalid_csv.write_text("")
     real_popen = session_client.subprocess.Popen
@@ -841,7 +841,7 @@ def test_real_server_start_failure_reports_before_cleanup_lock_and_reaps_child(
         "PYTHONPATH",
         str(tmp_path) if not python_path else f"{tmp_path}{os.pathsep}{python_path}",
     )
-    monkeypatch.setenv("LASTFM_SESSION_ROOT", str(long_root))
+    monkeypatch.setenv("MUSIC_HISTORY_SESSION_ROOT", str(long_root))
     real_popen = session_client.subprocess.Popen
     children = []
 
@@ -874,7 +874,7 @@ def test_real_server_start_failure_reports_before_cleanup_lock_and_reaps_child(
 def test_failed_child_runtime_cleanup_preserves_foreign_pid_and_socket(
     tmp_path, monkeypatch
 ):
-    monkeypatch.setenv("LASTFM_SESSION_ROOT", str(tmp_path))
+    monkeypatch.setenv("MUSIC_HISTORY_SESSION_ROOT", str(tmp_path))
     paths = session_paths("successor")
     paths.root.mkdir(parents=True)
     paths.pid.write_text("222")
@@ -889,7 +889,7 @@ def test_failed_child_runtime_cleanup_preserves_foreign_pid_and_socket(
 
 
 def test_start_session_refuses_existing_reachable_session(tmp_path, monkeypatch):
-    monkeypatch.setenv("LASTFM_SESSION_ROOT", str(tmp_path))
+    monkeypatch.setenv("MUSIC_HISTORY_SESSION_ROOT", str(tmp_path))
     monkeypatch.setattr(session_client, "socket_is_connectable", lambda _path: True)
 
     def fail_popen(*_args, **_kwargs):
@@ -908,7 +908,7 @@ def test_start_session_refuses_existing_reachable_session(tmp_path, monkeypatch)
 
 
 def test_explicit_start_waits_for_session_lifecycle_lock(tmp_path, monkeypatch):
-    monkeypatch.setenv("LASTFM_SESSION_ROOT", str(tmp_path))
+    monkeypatch.setenv("MUSIC_HISTORY_SESSION_ROOT", str(tmp_path))
     started = threading.Event()
     finished = threading.Event()
     monkeypatch.setattr(session_client, "socket_is_connectable", lambda _path: False)
@@ -954,7 +954,7 @@ def test_session_process_matches_requires_daemon_session_id():
 
 
 def test_stop_session_refuses_unverified_pid(tmp_path, monkeypatch):
-    monkeypatch.setenv("LASTFM_SESSION_ROOT", str(tmp_path))
+    monkeypatch.setenv("MUSIC_HISTORY_SESSION_ROOT", str(tmp_path))
     paths = session_paths("music-2025")
     paths.root.mkdir(parents=True)
     paths.pid.write_text("12345")
@@ -976,7 +976,7 @@ def test_stop_session_refuses_unverified_pid(tmp_path, monkeypatch):
 
 
 def test_list_sessions_reads_metadata(tmp_path, monkeypatch):
-    monkeypatch.setenv("LASTFM_SESSION_ROOT", str(tmp_path))
+    monkeypatch.setenv("MUSIC_HISTORY_SESSION_ROOT", str(tmp_path))
     paths = session_paths("a")
     paths.root.mkdir(parents=True)
     paths.metadata.write_text(json.dumps({"session_id": "a", "pid": 123}))
@@ -987,7 +987,7 @@ def test_list_sessions_reads_metadata(tmp_path, monkeypatch):
 def test_read_session_status_reports_false_liveness_without_starting_session(
     tmp_path, monkeypatch
 ):
-    monkeypatch.setenv("LASTFM_SESSION_ROOT", str(tmp_path))
+    monkeypatch.setenv("MUSIC_HISTORY_SESSION_ROOT", str(tmp_path))
     paths = session_paths("sleeping")
     paths.root.mkdir(parents=True)
     paths.metadata.write_text(json.dumps({"session_id": "sleeping", "pid": 123}))
@@ -1009,7 +1009,7 @@ def test_read_session_status_reports_false_liveness_without_starting_session(
 def test_read_session_status_preserves_missing_and_corrupt_metadata_errors(
     tmp_path, monkeypatch
 ):
-    monkeypatch.setenv("LASTFM_SESSION_ROOT", str(tmp_path))
+    monkeypatch.setenv("MUSIC_HISTORY_SESSION_ROOT", str(tmp_path))
 
     with pytest.raises(FileNotFoundError, match="No metadata found"):
         read_session_status("missing")
@@ -1022,7 +1022,7 @@ def test_read_session_status_preserves_missing_and_corrupt_metadata_errors(
 
 
 def test_list_sessions_reports_corrupt_metadata(tmp_path, monkeypatch):
-    monkeypatch.setenv("LASTFM_SESSION_ROOT", str(tmp_path))
+    monkeypatch.setenv("MUSIC_HISTORY_SESSION_ROOT", str(tmp_path))
     paths = session_paths("bad")
     paths.root.mkdir(parents=True)
     paths.metadata.write_text("{")
@@ -1037,7 +1037,7 @@ def test_list_sessions_reports_corrupt_metadata(tmp_path, monkeypatch):
 def test_list_sessions_reports_liveness_without_starting_sessions(
     tmp_path, monkeypatch
 ):
-    monkeypatch.setenv("LASTFM_SESSION_ROOT", str(tmp_path))
+    monkeypatch.setenv("MUSIC_HISTORY_SESSION_ROOT", str(tmp_path))
     for session_id in ("awake", "sleeping"):
         paths = session_paths(session_id)
         paths.root.mkdir(parents=True)
@@ -1061,7 +1061,7 @@ def test_list_sessions_reports_liveness_without_starting_sessions(
 
 
 def test_remove_session_files_removes_directory(tmp_path, monkeypatch):
-    monkeypatch.setenv("LASTFM_SESSION_ROOT", str(tmp_path))
+    monkeypatch.setenv("MUSIC_HISTORY_SESSION_ROOT", str(tmp_path))
     paths = session_paths("a")
     paths.root.mkdir(parents=True)
     paths.metadata.write_text("{}")
@@ -1071,7 +1071,7 @@ def test_remove_session_files_removes_directory(tmp_path, monkeypatch):
 
 
 def test_session_cleanup_skips_pid_verified_live_session(tmp_path, monkeypatch):
-    monkeypatch.setenv("LASTFM_SESSION_ROOT", str(tmp_path))
+    monkeypatch.setenv("MUSIC_HISTORY_SESSION_ROOT", str(tmp_path))
     paths = session_paths("live")
     paths.root.mkdir(parents=True)
     paths.metadata.write_text(json.dumps({"session_id": "live", "pid": 12345}))
@@ -1097,7 +1097,7 @@ def test_session_cleanup_skips_pid_verified_live_session(tmp_path, monkeypatch):
 
 
 def test_session_cleanup_all_removes_stale_corrupt_metadata(tmp_path, monkeypatch):
-    monkeypatch.setenv("LASTFM_SESSION_ROOT", str(tmp_path))
+    monkeypatch.setenv("MUSIC_HISTORY_SESSION_ROOT", str(tmp_path))
     paths = session_paths("bad")
     paths.root.mkdir(parents=True)
     paths.metadata.write_text("{")
@@ -1117,7 +1117,7 @@ def test_session_cleanup_all_removes_stale_corrupt_metadata(tmp_path, monkeypatc
 def test_session_cleanup_skips_session_revived_while_waiting_for_lock(
     tmp_path, monkeypatch
 ):
-    monkeypatch.setenv("LASTFM_SESSION_ROOT", str(tmp_path))
+    monkeypatch.setenv("MUSIC_HISTORY_SESSION_ROOT", str(tmp_path))
     paths = session_paths("race")
     paths.root.mkdir(parents=True)
     paths.metadata.write_text(json.dumps({"session_id": "race"}))

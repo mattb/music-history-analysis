@@ -16,7 +16,7 @@ console = Console()
 SCOPES = "playlist-modify-public playlist-modify-private"
 
 # Cache file for credentials
-CACHE_DIR = Path.home() / ".cache" / "lastfm-analysis"
+CACHE_DIR = Path.home() / ".cache" / "music-history-analysis"
 CREDENTIALS_FILE = CACHE_DIR / "spotify_credentials.json"
 TOKEN_CACHE = CACHE_DIR / ".spotify_token_cache"
 
