@@ -1,6 +1,6 @@
 ---
 name: lastfm-cli-journalism
-description: Use when turning a Last.fm listening-history repo and its agent-native lastfm CLI into narrative music analysis, playlist drafts, critic-alignment stories, release-era investigations, or evidence-based interview questions.
+description: Use when turning a Last.fm listening-history repo and its agent-native lastfm CLI into narrative music analysis, playlist drafts, critic-alignment stories, release-era investigations, evidence-based interview questions, music taste graphs, or intersection Venn diagrams.
 ---
 
 # Last.fm CLI Journalism
@@ -70,6 +70,12 @@ Use `listening-graph` when the question concerns communities, bridge artists, or
 The analytics layer may report community IDs, centralities, participation, articulation points, and neighborhoods. The journalism layer decides whether those measurements support a useful musical description. Name a community only from its member evidence, and call a bridge important only when the relevant metric and graph scope are stated.
 
 Do not compare centrality values from graphs built with different filters as though they share one scale. Report `min_artist_plays`, `min_shared_sessions`, date bounds, and whether betweenness was sampled.
+
+## Visual Music Maps
+
+Use `references/music-visuals.md` when the user asks for a music graph, taste graph, Venn diagram, intersection diagram, or an image "like the last one." Build the content from CLI evidence first, then use the visual recipe and bundled reference images to keep the graph or Venn consistent in style.
+
+For music graphs, use `listening-graph` to select communities, bridge nodes, and sparse edges before writing image prompts. For Venn diagrams, compute artist overlap from the relevant session CSVs or `top-artists` output, then use listening evidence and prior graph communities to name the side categories. Keep analytics facts separate from visual and journalistic labels.
 
 ## Relationship Trajectory Evidence
 
