@@ -18,6 +18,8 @@
     "longDescription": "Use a local music-history CLI and Codex skill to analyze Last.fm scrobbles, Spotify exports, critics lists, MusicBrainz metadata, and narrative music-data questions.",
     "developerName": "Matt Biddulph",
     "category": "Productivity",
+    "composerIcon": "./assets/music-history.svg",
+    "logo": "./assets/music-history.svg",
     "capabilities": [
       "Interactive",
       "Write"

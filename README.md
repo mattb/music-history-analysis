@@ -6,15 +6,29 @@ This README is for colleagues who want to install the plugin in Codex and run it
 
 ## Install
 
-Clone this repository, then install it as a local Codex plugin from the repo root.
+Clone this repository into `~/plugins/music-history`, then run the bundled installer. It registers the standard user-wide `local-plugins` marketplace, adds this checkout to that marketplace, and installs the plugin into Codex's active cache.
 
 ```bash
-codex plugin add /path/to/music-2025
+git clone https://github.com/mattb/music-history-analysis.git ~/plugins/music-history
+python3 ~/plugins/music-history/scripts/install_codex_plugin.py
 ```
 
-After updating the checkout, reinstall the plugin from the same path so Codex reloads the skill metadata. Start a new Codex thread after reinstalling.
+The installer is idempotent and preserves other entries in `~/.agents/plugins/marketplace.json`. To refresh after pulling repository updates, run it again:
+
+```bash
+git -C ~/plugins/music-history pull
+python3 ~/plugins/music-history/scripts/install_codex_plugin.py
+```
+
+Quit and reopen Codex after a first install or after skill metadata changes. The installed plugin key is `music-history@local-plugins`.
 
 The plugin exposes the `$music-history-cli-journalism` skill and the `music-history` command-line tool.
+
+To verify the Codex surface after reloading, use:
+
+```text
+$music-history-cli-journalism First confirm this skill is available. Then walk me through a demo showing the realistic user experience of this skill, including me in the loop where needed.
+```
 
 ## Local Setup
 
@@ -65,4 +79,3 @@ uts, utc_time, artist, artist_mbid, album, album_mbid, track, track_mbid
 ```
 
 Critics lists live as `critics-YYYY.json` files in the repo root. The CLI defaults to all available critics years unless you pass `--year`.
-
