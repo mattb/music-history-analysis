@@ -30,6 +30,25 @@ To verify the Codex surface after reloading, use:
 $music-history-cli-journalism First confirm this skill is available. Then walk me through a demo showing the realistic user experience of this skill, including me in the loop where needed.
 ```
 
+## First Run With Listening Data
+
+For an existing Last.fm-compatible export, pass the CSV directly:
+
+```bash
+music-history session-start --session-id my-history --csv /path/to/recenttracks-user.csv --json
+```
+
+Spotify Extended Streaming History exports contain `Streaming_History_Audio_*.json` files and must be converted once before starting a session. Keep the raw JSON untouched and write a derived `recenttracks-*.csv` beside it:
+
+```bash
+music-history spotify convert ~/Downloads/Elle_spotify_data \
+  --output ~/Downloads/Elle_spotify_data/recenttracks-elle-spotify.csv
+music-history session-start --session-id Elle_spotify_data \
+  --csv ~/Downloads/Elle_spotify_data/recenttracks-elle-spotify.csv --json
+```
+
+The first CLI invocation after installation may spend a minute initializing Python packages. Named sessions write sockets and metadata under `~/.cache/music-history-analysis/sessions/`; in a sandboxed Codex session, allow that scoped cache write when prompted.
+
 ## Local Setup
 
 The installer exposes the CLI on `PATH`. For development or tests, also sync the repo-local environment:

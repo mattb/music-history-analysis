@@ -7,9 +7,17 @@ description: Use when turning a Last.fm listening-history repo and its agent-nat
 
 Use this skill to investigate listening history as source material for music-data journalism. The goal is not to memorize commands or dump statistics; it is to use the repo's `music-history` CLI to gather evidence, form a story, and deliver the artifact the user asked for.
 
+## First-Run Preflight
+
+1. Resolve the CLI with `command -v music-history`, then run `music-history --help`. The first invocation after installation may take up to a minute while Python packages initialize; let it finish once before treating it as stuck.
+2. If the CLI is missing, do not guess at `.venv/bin/music-history` and do not fall back to system Python. Look for the durable checkout at `~/plugins/music-history` and run its `scripts/install_codex_plugin.py`; if that checkout is absent, explain that installation is incomplete.
+3. Resolve the user's named input path before choosing commands. Inspect that exact file or directory rather than assuming the current directory contains data.
+4. If the input is a `recenttracks-*.csv`, use its absolute path. If it is a Spotify Extended Streaming History directory containing `Streaming_History_Audio_*.json`, convert it once with `music-history spotify convert <directory> --output <directory>/recenttracks-<name>-spotify.csv`; keep the raw JSON untouched and use the derived CSV for the session.
+5. Named sessions write sockets and metadata under `~/.cache/music-history-analysis/sessions/`. In a sandboxed run, request that scoped cache write before `session-start` instead of waiting for startup to fail.
+
 ## Start With The CLI Contract
 
-1. Run `music-history --help` from the repo context.
+1. Run `music-history --help` from the current working context.
 2. Run command-specific `--help` for the small set of commands that match the question.
 3. Prefer the live help output over remembered syntax.
 4. Use the newest auto-detected `recenttracks-*.csv` unless the user names a CSV or time window that requires another source.
